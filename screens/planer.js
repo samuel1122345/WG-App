@@ -1,9 +1,31 @@
-// screens/PlanerScreen.js
 import React, { useState } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Modal, TextInput, Alert } from 'react-native';
+import { 
+  StyleSheet, 
+  Text, 
+  View, 
+  TouchableOpacity, 
+  ScrollView, 
+  Modal, 
+  TextInput, 
+  Alert, 
+  KeyboardAvoidingView, 
+  Platform 
+} from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
-export default function PlanerScreen({ allTasks, onAddTask }) {
+// FIREBASE IMPORTE
+import { db } from '../firebaseConfig'; 
+import { collection, addDoc, deleteDoc, doc } from 'firebase/firestore';
+
+// Konstante Farben für WG-Mitglieder zur besseren Übersicht
+const USER_COLORS = {
+  'Sarah': { color: '#FF3B30', bg: '#FFECEB' },
+  'Lukas': { color: '#007AFF', bg: '#EBF4FF' },
+  'Tim': { color: '#34C759', bg: '#EBFCEF' },
+  'Standard': { color: '#8E8E93', bg: '#F2F2F7' }
+};
+
+export default function PlanerScreen({ allTasks }) {
   // Modal-Zustände
   const [isAddModalVisible, setIsAddModalVisible] = useState(false);
   const [isDetailModalVisible, setIsDetailModalVisible] = useState(false);
@@ -16,105 +38,148 @@ export default function PlanerScreen({ allTasks, onAddTask }) {
   const [user, setUser] = useState('');
   const [desc, setDesc] = useState('');
 
-  const handleSave = () => {
-    if (!title || !user) {
-      Alert.alert('Fehler', 'Bitte gib mindestens einen Titel und eine zuständige Person an.');
+  // Hilfsfunktion: Bestimmt die Farbe basierend auf dem Namen
+  const getUserStyle = (userName) => USER_COLORS[userName] || USER_COLORS['Standard'];
+
+  // FUNKTION: Aufgabe in Firebase speichern
+  const handleSave = async () => {
+    if (!title.trim() || !user.trim()) {
+      Alert.alert('Fehler', 'Bitte gib mindestens einen Titel und eine Person an.');
       return;
     }
 
-    const newUserObj = {
-      id: Date.now(),
-      title,
-      day: 'Mi', 
-      dateNum: 20,
-      time: time || 'Ganztägig',
-      user,
-      userInit: user.slice(0, 2).toUpperCase(),
-      color: '#007AFF',
-      bg: '#EBF4FF',
-      desc: desc || 'Keine zusätzliche Beschreibung.',
-    };
+    const style = getUserStyle(user);
 
-    onAddTask(newUserObj);
-    
-    // Reset Form & Close
-    setTitle('');
-    setTime('');
-    setUser('');
-    setDesc('');
-    setIsAddModalVisible(false);
+    try {
+      await addDoc(collection(db, "tasks"), {
+        title: title.trim(),
+        time: time.trim() || 'Ganztägig',
+        user: user.trim(),
+        userInit: user.trim().slice(0, 2).toUpperCase(),
+        day: 'Di', // Heute ist Dienstag, 26. Mai 2026
+        dateNum: 26, 
+        color: style.color,
+        bg: style.bg,
+        desc: desc.trim() || 'Keine zusätzliche Beschreibung.',
+        createdAt: new Date() 
+      });
+
+      // Reset & Schließen
+      setTitle(''); setTime(''); setUser(''); setDesc('');
+      setIsAddModalVisible(false);
+    } catch (e) {
+      console.error("Fehler beim Speichern: ", e);
+      Alert.alert("Fehler", "Die Aufgabe konnte nicht in der Cloud gespeichert werden.");
+    }
+  };
+
+  // FUNKTION: Aufgabe aus Firebase löschen
+  const handleDelete = async (id) => {
+    Alert.alert(
+      "Aufgabe löschen", 
+      "Möchtest du dieses To-Do wirklich permanent entfernen?", 
+      [
+        { text: "Abbrechen", style: "cancel" },
+        { 
+          text: "Löschen", 
+          style: "destructive", 
+          onPress: async () => {
+            try {
+              await deleteDoc(doc(db, "tasks", id));
+              setIsDetailModalVisible(false);
+            } catch (e) {
+              Alert.alert("Fehler", "Löschen fehlgeschlagen.");
+            }
+          } 
+        }
+      ]
+    );
   };
 
   const openDetails = (task) => {
     setSelectedTask(task);
-    setSwapRequested(false); // Reset Tauschstatus bei jedem Öffnen
+    setSwapRequested(false);
     setIsDetailModalVisible(true);
-  };
-
-  const handleSwapRequest = () => {
-    setSwapRequested(true);
-    Alert.alert('Anfrage gesendet', `Deine Tauschanfrage für "${selectedTask.title}" wurde an die WG übermittelt.`);
   };
 
   return (
     <View style={styles.container}>
-      {/* INBOX CONTENT */}
+      {/* HAUPT-LISTE */}
       <ScrollView showsVerticalScrollIndicator={false} style={styles.content}>
-        <Text style={styles.sectionTitle}>Wochenübersicht</Text>
+        <Text style={styles.sectionTitle}>WG-Inbox</Text>
         
-        {allTasks.map(task => (
-          <TouchableOpacity key={task.id} style={styles.taskItem} onPress={() => openDetails(task)}>
-            <View style={[styles.avatar, { backgroundColor: task.bg }]}>
-              <Text style={[styles.avatarText, { color: task.color }]}>{task.userInit}</Text>
-            </View>
-            <View style={styles.taskInfo}>
-              <Text style={styles.taskTitle}>{task.title}</Text>
-              <Text style={styles.taskTime}>{task.time} Uhr • {task.user}</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={16} color="#C7C7CC" />
-          </TouchableOpacity>
-        ))}
+        {allTasks.length === 0 ? (
+          <Text style={styles.emptyText}>Alles erledigt! Keine Aufgaben vorhanden.</Text>
+        ) : (
+          allTasks.map(task => (
+            <TouchableOpacity key={task.id} style={styles.taskItem} onPress={() => openDetails(task)}>
+              <View style={[styles.avatar, { backgroundColor: task.bg }]}>
+                <Text style={[styles.avatarText, { color: task.color }]}>{task.userInit}</Text>
+              </View>
+              <View style={styles.taskInfo}>
+                <Text style={styles.taskTitle}>{task.title}</Text>
+                <Text style={styles.taskTime}>{task.time} Uhr • {task.user}</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color="#C7C7CC" />
+            </TouchableOpacity>
+          ))
+        )}
         <View style={{ height: 100 }} />
       </ScrollView>
 
-      {/* PLUS BUTTON UNTEN LINKS */}
+      {/* SCHWEBENDER PLUS-BUTTON */}
       <TouchableOpacity style={styles.fabButton} onPress={() => setIsAddModalVisible(true)}>
-        <Ionicons name="add" size={28} color="#FFF" />
+        <Ionicons name="add" size={32} color="#FFF" />
       </TouchableOpacity>
 
-      {/* MODAL 1: NEUES TO-DO HINZUFÜGEN */}
+      {/* MODAL 1: NEUE AUFGABE */}
       <Modal animationType="slide" transparent={true} visible={isAddModalVisible}>
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView 
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          style={styles.modalOverlay}
+        >
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalContentTitle}>Neues To-Do</Text>
+              <Text style={styles.modalContentTitle}>Neue Aufgabe</Text>
               <TouchableOpacity onPress={() => setIsAddModalVisible(false)}>
                 <Text style={styles.closeText}>Abbrechen</Text>
               </TouchableOpacity>
             </View>
 
-            <TextInput style={styles.input} placeholder="Titel der Aufgabe (z.B. Bad putzen)" placeholderTextColor="#8E8E93" value={title} onChangeText={setTitle} />
-            <TextInput style={styles.input} placeholder="Uhrzeit (z.B. 18:00)" placeholderTextColor="#8E8E93" value={time} onChangeText={setTime} />
-            <TextInput style={styles.input} placeholder="Wer erledigt es? (z.B. Tim)" placeholderTextColor="#8E8E93" value={user} onChangeText={setUser} />
-            <TextInput style={[styles.input, { height: 80, paddingTop: 12 }]} placeholder="Beschreibung (optional)" placeholderTextColor="#8E8E93" multiline={true} value={desc} onChangeText={setDesc} />
+            <TextInput style={styles.input} placeholder="Was ist zu tun?" placeholderTextColor="#8E8E93" value={title} onChangeText={setTitle} />
+            <TextInput style={styles.input} placeholder="Wann? (z.B. 18:00)" placeholderTextColor="#8E8E93" value={time} onChangeText={setTime} />
+            <TextInput style={styles.input} placeholder="Wer? (Name)" placeholderTextColor="#8E8E93" value={user} onChangeText={setUser} />
+            <TextInput 
+              style={[styles.input, { height: 100, paddingTop: 12 }]} 
+              placeholder="Zusätzliche Infos..." 
+              placeholderTextColor="#8E8E93" 
+              multiline 
+              value={desc} 
+              onChangeText={setDesc} 
+            />
 
             <TouchableOpacity style={styles.saveButton} onPress={handleSave}>
               <Text style={styles.saveButtonText}>Hinzufügen</Text>
             </TouchableOpacity>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
-      {/* MODAL 2: ERWEITERTE DETAILANSICHT & TAUSCHOPTIONEN */}
+      {/* MODAL 2: DETAILS & LÖSCHEN */}
       <Modal animationType="slide" transparent={true} visible={isDetailModalVisible}>
         <View style={styles.modalOverlay}>
           {selectedTask && (
             <View style={styles.modalContent}>
               <View style={styles.modalHeader}>
                 <Text style={styles.modalContentTitle}>Details</Text>
-                <TouchableOpacity onPress={() => setIsDetailModalVisible(false)}>
-                  <Text style={styles.closeTextText}>Fertig</Text>
-                </TouchableOpacity>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <TouchableOpacity onPress={() => handleDelete(selectedTask.id)} style={{ marginRight: 20 }}>
+                    <Ionicons name="trash-outline" size={24} color="#FF3B30" />
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => setIsDetailModalVisible(false)}>
+                    <Text style={styles.closeTextText}>Fertig</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
 
               <View style={styles.detailCard}>
@@ -123,26 +188,22 @@ export default function PlanerScreen({ allTasks, onAddTask }) {
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.detailMainTitle}>{selectedTask.title}</Text>
-                  <Text style={styles.detailSubTitle}>{selectedTask.time} Uhr • Zuständig: {selectedTask.user}</Text>
+                  <Text style={styles.detailSubTitle}>{selectedTask.time} Uhr • {selectedTask.user}</Text>
                 </View>
               </View>
 
               <Text style={styles.descHeadline}>Beschreibung</Text>
-              <Text style={styles.descText}>{selectedTask.desc || 'Keine zusätzliche Beschreibung hinterlegt.'}</Text>
+              <Text style={styles.descText}>{selectedTask.desc}</Text>
 
-              {/* ACTION BUTTONS */}
-              <View style={styles.actionContainer}>
-                <TouchableOpacity 
-                  style={[styles.swapButton, swapRequested && styles.swapButtonActive]} 
-                  onPress={handleSwapRequest}
-                  disabled={swapRequested}
-                >
-                  <Ionicons name={swapRequested ? "checkmark-circle" : "swap-horizontal"} size={18} color={swapRequested ? "#34C759" : "#007AFF"} style={{ marginRight: 8 }} />
-                  <Text style={[styles.swapButtonText, swapRequested && styles.swapButtonTextActive]}>
-                    {swapRequested ? 'Tauschanfrage aktiv' : 'Dienst tauschen'}
-                  </Text>
-                </TouchableOpacity>
-              </View>
+              <TouchableOpacity 
+                style={[styles.swapButton, swapRequested && styles.swapButtonActive]} 
+                onPress={() => { setSwapRequested(true); Alert.alert("Anfrage gesendet!", "Die WG wurde informiert."); }}
+              >
+                <Ionicons name="swap-horizontal" size={18} color={swapRequested ? "#34C759" : "#007AFF"} />
+                <Text style={[styles.swapButtonText, swapRequested && styles.swapButtonTextActive]}>
+                  {swapRequested ? 'Tauschanfrage läuft' : 'Dienst tauschen'}
+                </Text>
+              </TouchableOpacity>
             </View>
           )}
         </View>
@@ -153,37 +214,34 @@ export default function PlanerScreen({ allTasks, onAddTask }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#FFF' },
-  content: { flex: 1, paddingHorizontal: 25 },
-  sectionTitle: { fontSize: 22, fontWeight: 'bold', marginBottom: 15, color: '#000' },
-  taskItem: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF', paddingVertical: 14, borderBottomWidth: 0.5, borderBottomColor: '#E5E5EA' },
-  avatar: { width: 38, height: 38, borderRadius: 19, justifyContent: 'center', alignItems: 'center', marginRight: 15 },
-  avatarText: { fontSize: 13, fontWeight: 'bold' },
+  content: { flex: 1, paddingHorizontal: 25, paddingTop: 10 },
+  sectionTitle: { fontSize: 30, fontWeight: 'bold', marginBottom: 20, color: '#000' },
+  emptyText: { color: '#8E8E93', textAlign: 'center', marginTop: 50, fontSize: 16, fontStyle: 'italic' },
+  taskItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 15, borderBottomWidth: 0.5, borderBottomColor: '#E5E5EA' },
+  avatar: { width: 44, height: 44, borderRadius: 22, justifyContent: 'center', alignItems: 'center', marginRight: 15 },
+  avatarText: { fontSize: 14, fontWeight: 'bold' },
   taskInfo: { flex: 1 },
-  taskTitle: { fontSize: 16, fontWeight: '600', color: '#000' },
-  taskTime: { fontSize: 13, color: '#8E8E93', marginTop: 2 },
-  fabButton: { position: 'absolute', bottom: 20, left: 25, width: 56, height: 56, backgroundColor: '#007AFF', borderRadius: 28, justifyContent: 'center', alignItems: 'center', shadowColor: '#007AFF', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8 },
-  modalOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.2)' },
-  
-  // Hier wurde paddingStyle korrigiert zu paddingTop / paddingBottom
-  modalContent: { backgroundColor: '#FFF', borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 24, paddingTop: 10, paddingBottom: 50, shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.1, shadowRadius: 10 },
-  
-  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 20, marginBottom: 25 },
-  modalContentTitle: { fontSize: 20, fontWeight: 'bold' },
-  closeText: { fontSize: 16, color: '#FF3B30', fontWeight: '500' },
-  closeTextText: { fontSize: 16, color: '#007AFF', fontWeight: '600' },
-  input: { backgroundColor: '#F2F2F7', borderRadius: 10, paddingHorizontal: 16, height: 48, fontSize: 16, color: '#000', marginBottom: 16 },
-  saveButton: { backgroundColor: '#007AFF', borderRadius: 12, height: 50, justifyContent: 'center', alignItems: 'center', marginTop: 10 },
-  saveButtonText: { color: '#FFF', fontSize: 16, fontWeight: '600' },
-  detailCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F2F2F7', padding: 16, borderRadius: 16, marginBottom: 25 },
-  detailAvatar: { width: 50, height: 50, borderRadius: 25, justifyContent: 'center', alignItems: 'center', marginRight: 15 },
-  detailAvatarText: { fontSize: 16, fontWeight: 'bold' },
-  detailMainTitle: { fontSize: 18, fontWeight: '700', color: '#000' },
-  detailSubTitle: { fontSize: 14, color: '#8E8E93', marginTop: 2 },
-  descHeadline: { fontSize: 14, fontWeight: '600', color: '#8E8E93', textTransform: 'uppercase', marginBottom: 8 },
-  descText: { fontSize: 16, color: '#3A3A3C', lineHeight: 22, marginBottom: 30 },
-  actionContainer: { borderTopWidth: 0.5, borderTopColor: '#E5E5EA', paddingTop: 20 },
-  swapButton: { flexDirection: 'row', backgroundColor: '#FFF', borderRadius: 12, height: 50, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#007AFF' },
+  taskTitle: { fontSize: 17, fontWeight: '600' },
+  taskTime: { fontSize: 14, color: '#8E8E93', marginTop: 2 },
+  fabButton: { position: 'absolute', bottom: 30, right: 25, width: 60, height: 60, backgroundColor: '#007AFF', borderRadius: 30, justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 5 },
+  modalOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.4)' },
+  modalContent: { backgroundColor: '#FFF', borderTopLeftRadius: 25, borderTopRightRadius: 25, paddingHorizontal: 25, paddingBottom: 50 },
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 20 },
+  modalContentTitle: { fontSize: 22, fontWeight: 'bold' },
+  closeText: { fontSize: 17, color: '#FF3B30' },
+  closeTextText: { fontSize: 17, color: '#007AFF', fontWeight: 'bold' },
+  input: { backgroundColor: '#F2F2F7', borderRadius: 12, padding: 15, fontSize: 16, marginBottom: 15, color: '#000' },
+  saveButton: { backgroundColor: '#007AFF', borderRadius: 15, padding: 18, alignItems: 'center', marginTop: 10 },
+  saveButtonText: { color: '#FFF', fontSize: 18, fontWeight: 'bold' },
+  detailCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F2F2F7', padding: 20, borderRadius: 20, marginBottom: 25 },
+  detailAvatar: { width: 56, height: 56, borderRadius: 28, justifyContent: 'center', alignItems: 'center', marginRight: 15 },
+  detailAvatarText: { fontSize: 18, fontWeight: 'bold' },
+  detailMainTitle: { fontSize: 20, fontWeight: 'bold' },
+  detailSubTitle: { fontSize: 15, color: '#8E8E93', marginTop: 4 },
+  descHeadline: { fontSize: 13, fontWeight: 'bold', color: '#8E8E93', textTransform: 'uppercase', marginBottom: 10 },
+  descText: { fontSize: 16, color: '#333', lineHeight: 24, marginBottom: 35 },
+  swapButton: { flexDirection: 'row', borderRadius: 15, padding: 16, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#007AFF' },
   swapButtonActive: { borderColor: '#34C759', backgroundColor: '#EBFCEF' },
-  swapButtonText: { color: '#007AFF', fontSize: 16, fontWeight: '600' },
+  swapButtonText: { color: '#007AFF', fontSize: 16, fontWeight: 'bold', marginLeft: 10 },
   swapButtonTextActive: { color: '#34C759' }
 });
