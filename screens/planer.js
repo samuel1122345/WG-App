@@ -1,240 +1,289 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  StyleSheet, Text, View, TouchableOpacity, ScrollView, 
-  Modal, TextInput, Alert, KeyboardAvoidingView, Platform 
-} from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Modal, TextInput, Alert, KeyboardAvoidingView, Platform, Image } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
-
-// FIREBASE
 import { db } from '../firebaseConfig'; 
-import { 
-  collection, addDoc, updateDoc, deleteDoc, 
-  doc, onSnapshot, query, orderBy 
-} from 'firebase/firestore';
+import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, query, where, orderBy, getDocs, writeBatch } from 'firebase/firestore';
 
-export default function PlanerScreen() {
-  // Daten-Listen
+export default function PlanerScreen({ currentUser, currentWg }) {
   const [tasks, setTasks] = useState([]);
   const [members, setMembers] = useState([]);
+  const [swapRequests, setSwapRequests] = useState([]); 
 
-  // Modals
   const [isAddModalVisible, setIsAddModalVisible] = useState(false);
   const [isDetailModalVisible, setIsDetailModalVisible] = useState(false);
-  const [isSwapMenuVisible, setIsSwapMenuVisible] = useState(false);
+  const [detailViewMode, setDetailViewMode] = useState('details'); 
 
-  // Formular-Zustände
   const [editId, setEditId] = useState(null);
   const [title, setTitle] = useState('');
-  const [selectedMember, setSelectedMember] = useState(null);
   const [date, setDate] = useState(new Date());
   const [desc, setDesc] = useState('');
   const [showPicker, setShowPicker] = useState(false);
-
-  // Selektierte Aufgabe für Details/Tausch
   const [selectedTask, setSelectedTask] = useState(null);
+  const [selectedTargetTask, setSelectedTargetTask] = useState(null); 
 
-  // --- 1. ECHTZEIT-DATEN LADEN ---
   useEffect(() => {
-    // Mitglieder aus Collection "members" laden
-    const qMembers = query(collection(db, "members"), orderBy("name"));
-    const unsubMembers = onSnapshot(qMembers, (snap) => {
-      const mData = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      setMembers(mData);
-    }, (err) => console.error("Mitglieder-Fehler:", err));
+    if (!currentWg?.id) return;
 
-    // Aufgaben aus Collection "tasks" laden
-    const qTasks = query(collection(db, "tasks"), orderBy("fullDate", "asc"));
-    const unsubTasks = onSnapshot(qTasks, (snap) => {
-      const tData = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      setTasks(tData);
-    }, (err) => console.error("Aufgaben-Fehler:", err));
+    const unsubMembers = onSnapshot(query(collection(db, "users"), where("wgId", "==", currentWg.id)), (snap) => {
+      setMembers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
 
-    return () => { unsubMembers(); unsubTasks(); };
-  }, []);
+    const unsubTasks = onSnapshot(query(collection(db, "tasks"), where("wgId", "==", currentWg.id), orderBy("fullDate", "asc")), (snap) => {
+      setTasks(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
 
-  // --- 2. HILFSFUNKTIONEN ---
+    const unsubSwaps = onSnapshot(query(collection(db, "swapRequests"), where("wgId", "==", currentWg.id), where("status", "==", "pending")), (snap) => {
+      setSwapRequests(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+
+    return () => { unsubMembers(); unsubTasks(); unsubSwaps(); };
+  }, [currentWg]);
+
   const formatDate = (d) => d.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: 'short' });
 
   const resetForm = () => {
-    setEditId(null); setTitle(''); setSelectedMember(null); 
-    setDate(new Date()); setDesc(''); setIsAddModalVisible(false);
+    setEditId(null); setTitle(''); setDate(new Date()); setDesc(''); setIsAddModalVisible(false);
   };
 
-  const openDetails = (task) => {
-    setSelectedTask(task);
-    setIsDetailModalVisible(true);
-  };
-
-  // --- 3. SPEICHERN & BEARBEITEN ---
   const handleSave = async () => {
-    console.log("Speichervorgang gestartet...");
-    
     if (!title.trim()) {
-      Alert.alert('Fehlt etwas?', 'Bitte gib der Aufgabe einen Namen.');
+      Alert.alert('Fehler', 'Bitte gib einen Titel an.');
       return;
     }
-    if (!selectedMember) {
-      Alert.alert('Wer machts?', 'Bitte wähle eine Person aus den Chips unten aus.');
-      return;
-    }
-
     const taskData = {
       title: title.trim(),
       dateDisplay: formatDate(date),
       fullDate: date.toISOString(),
-      userId: selectedMember.id,
-      userName: selectedMember.name,
-      userColor: selectedMember.color || '#007AFF',
-      userBg: selectedMember.bg || '#EBF4FF',
+      userId: editId ? selectedTask.userId : currentUser.id,
+      userName: editId ? selectedTask.userName : currentUser.name,
+      userColor: editId ? selectedTask.userColor : (currentUser.color || '#007AFF'),
+      userBg: editId ? selectedTask.userBg : (currentUser.avatarBg || '#EBF4FF'),
       desc: desc.trim() || 'Keine Beschreibung.',
+      wgId: currentWg.id,
+      type: editId ? (selectedTask?.type || "manuell") : "manuell"
     };
 
     try {
       if (editId) {
         await updateDoc(doc(db, "tasks", editId), taskData);
-        console.log("Update erfolgreich");
       } else {
         await addDoc(collection(db, "tasks"), { ...taskData, createdAt: new Date() });
-        console.log("Neu-Eintrag erfolgreich");
       }
       resetForm();
-    } catch (e) {
-      console.error("Firebase Speicherfehler:", e);
-      Alert.alert("Fehler", "Die Daten konnten nicht gespeichert werden. Prüfe deine Internetverbindung.");
-    }
+    } catch (e) { Alert.alert("Fehler", "Speichern fehlgeschlagen."); }
   };
 
-  // --- 4. LÖSCHEN ---
   const handleDelete = (id) => {
-    Alert.alert("Aufgabe löschen", "Möchtest du diesen Eintrag wirklich entfernen?", [
+    Alert.alert("Aufgabe entfernen", "Möchtest du diesen Eintrag permanent löschen?", [
       { text: "Abbrechen", style: "cancel" },
       { text: "Löschen", style: "destructive", onPress: async () => {
           try {
             await deleteDoc(doc(db, "tasks", id));
-            setIsDetailModalVisible(false);
+            setIsDetailModalVisible(false); setSelectedTask(null);
           } catch (e) { Alert.alert("Fehler", "Löschen fehlgeschlagen."); }
       }}
     ]);
   };
 
-  // --- 5. TAUSCH-LOGIK (JOB GEGEN JOB) ---
-  const executeSwap = async (targetTask) => {
-    if (!selectedTask) return;
+  const createSwapRequest = async () => {
+    if (!selectedTask || !selectedTargetTask) {
+      Alert.alert("Fehler", "Bitte wähle einen Job aus.");
+      return;
+    }
+    try {
+      const swapDocRef = await addDoc(collection(db, "swapRequests"), {
+        wgId: currentWg.id, fromTaskId: selectedTask.id, fromTaskTitle: selectedTask.title,
+        fromUserId: selectedTask.userId, fromUserName: selectedTask.userName,
+        toTaskId: selectedTargetTask.id, toTaskTitle: selectedTargetTask.title,
+        toUserId: selectedTargetTask.userId, toUserName: selectedTargetTask.userName,
+        status: "pending", createdAt: new Date().toISOString()
+      });
 
-    Alert.alert(
-      "Tausch bestätigen",
-      `Tausche "${selectedTask.title}" gegen "${targetTask.title}"?`,
-      [
-        { text: "Abbrechen", style: "cancel" },
-        { text: "Tauschen", onPress: async () => {
-          try {
-            const refA = doc(db, "tasks", selectedTask.id);
-            const refB = doc(db, "tasks", targetTask.id);
+      await addDoc(collection(db, "notifications"), {
+        wgId: currentWg.id, userId: selectedTargetTask.userId,
+        title: "Neue Tauschanfrage 🔄",
+        message: `${selectedTask.userName} möchte den Dienst "${selectedTask.title}" gegen deinen Job "${selectedTargetTask.title}" eintauschen.`,
+        type: "swap_request", status: "unread", createdAt: new Date().toISOString(),
+        extraData: {
+          swapRequestId: swapDocRef.id, fromTaskId: selectedTask.id, fromTaskTitle: selectedTask.title,
+          fromUserId: selectedTask.userId, fromUserName: selectedTask.userName,
+          toTaskId: selectedTargetTask.id, toTaskTitle: selectedTargetTask.title,
+          toUserId: selectedTargetTask.userId, toUserName: selectedTargetTask.userName
+        }
+      });
 
-            // Daten über Kreuz tauschen
-            await updateDoc(refA, {
-              userId: targetTask.userId, userName: targetTask.userName,
-              userColor: targetTask.userColor, userBg: targetTask.userBg
-            });
-            await updateDoc(refB, {
-              userId: selectedTask.userId, userName: selectedTask.userName,
-              userColor: selectedTask.userColor, userBg: selectedTask.userBg
-            });
+      setIsDetailModalVisible(false); setSelectedTargetTask(null);
+      Alert.alert("Anfrage gesendet", `${selectedTargetTask.userName} hat eine Tauschanfrage erhalten.`);
+    } catch (e) { Alert.alert("Fehler", "Anfrage failed."); }
+  };
 
-            setIsSwapMenuVisible(false);
-            setIsDetailModalVisible(false);
-            Alert.alert("Erfolg", "Dienste wurden getauscht!");
-          } catch (e) { Alert.alert("Tausch-Fehler", e.message); }
-        }}
-      ]
+  const acceptSwapRequest = async (request) => {
+    try {
+      const batch = writeBatch(db);
+      const taskRefA = doc(db, "tasks", request.fromTaskId);
+      const taskRefB = doc(db, "tasks", request.toTaskId);
+      const requestRef = doc(db, "swapRequests", request.id);
+
+      const userA = members.find(m => m.id === request.fromUserId);
+      const userB = members.find(m => m.id === request.toUserId);
+      if (!userA || !userB) return;
+
+      batch.update(taskRefA, { userId: userB.id, userName: userB.name, userColor: userB.color || '#000', userBg: userB.avatarBg || '#F2F2F7' });
+      batch.update(taskRefB, { userId: userA.id, userName: userA.name, userColor: userA.color || '#000', userBg: userA.avatarBg || '#F2F2F7' });
+      batch.update(requestRef, { status: "accepted" });
+
+      const notifRef = doc(collection(db, "notifications"));
+      batch.set(notifRef, {
+        wgId: currentWg.id, userId: request.fromUserId,
+        title: "Tausch akzeptiert! ✅",
+        message: `${currentUser.name} hat deine Tauschanfrage für "${request.fromTaskTitle}" angenommen.`,
+        type: "swap_accepted", status: "unread", createdAt: new Date().toISOString()
+      });
+
+      const resolvedSwapIds = [request.id];
+
+      const allSwapsSnap = await getDocs(query(collection(db, "swapRequests"), where("wgId", "==", currentWg.id), where("status", "==", "pending")));
+      allSwapsSnap.forEach((subDoc) => {
+        const data = subDoc.data();
+        if (subDoc.id !== request.id && (
+          data.fromTaskId === request.fromTaskId || data.toTaskId === request.fromTaskId ||
+          data.fromTaskId === request.toTaskId || data.toTaskId === request.toTaskId
+        )) {
+          batch.update(doc(db, "swapRequests", subDoc.id), { status: "invalidated" });
+          resolvedSwapIds.push(subDoc.id);
+        }
+      });
+
+      const notifQuery = query(collection(db, "notifications"), where("wgId", "==", currentWg.id), where("type", "==", "swap_request"));
+      const notifSnap = await getDocs(notifQuery);
+      notifSnap.forEach((nDoc) => {
+        if (resolvedSwapIds.includes(nDoc.data().extraData?.swapRequestId)) {
+          batch.delete(doc(db, "notifications", nDoc.id));
+        }
+      });
+
+      await batch.commit();
+      setIsDetailModalVisible(false); setSelectedTask(null);
+      Alert.alert("Tausch erfolgreich", `Dienst getauscht mit ${request.fromUserName}.`);
+    } catch (e) { Alert.alert("Fehler", "Tausch failed."); }
+  };
+
+  const declineSwapRequest = async (request) => {
+    try {
+      const batch = writeBatch(db);
+      batch.update(doc(db, "swapRequests", request.id), { status: "declined" });
+
+      const notifRef = doc(collection(db, "notifications"));
+      batch.set(notifRef, {
+        wgId: currentWg.id, userId: request.fromUserId,
+        title: "Tausch abgelehnt ❌",
+        message: `${currentUser.name} hat deine Tauschanfrage für "${request.fromTaskTitle}" abgelehnt.`,
+        type: "swap_declined", status: "unread", createdAt: new Date().toISOString()
+      });
+
+      const notifQuery = query(collection(db, "notifications"), where("wgId", "==", currentWg.id), where("type", "==", "swap_request"));
+      const notifSnap = await getDocs(notifQuery);
+      notifSnap.forEach((nDoc) => {
+        if (nDoc.data().extraData?.swapRequestId === request.id) {
+          batch.delete(doc(db, "notifications", nDoc.id));
+        }
+      });
+
+      await batch.commit();
+      setIsDetailModalVisible(false); setSelectedTask(null);
+      Alert.alert("Abgelehnt", "Tauschanfrage wurde verworfen.");
+    } catch (e) { Alert.alert("Fehler", "Aktion failed."); }
+  };
+
+  const renderTaskAvatar = (task) => {
+    const member = members.find(m => m.id === task.userId);
+    const actualMember = task.userId === currentUser.id ? currentUser : member;
+    const type = actualMember?.avatarType || 'initials';
+    
+    if (type === 'emoji') {
+      return (
+        <View style={[styles.avatar, { backgroundColor: actualMember?.avatarBg || '#F2F2F7' }]}>
+          <Text style={{ fontSize: 20 }}>{actualMember?.avatarEmoji || '👤'}</Text>
+        </View>
+      );
+    }
+
+    const avatarUrl = actualMember?.avatarUrl || '';
+    const isValidUrl = avatarUrl && (
+      avatarUrl.startsWith('http://') || 
+      avatarUrl.startsWith('https://') || 
+      avatarUrl.startsWith('file://') || 
+      avatarUrl.startsWith('data:')
+    );
+
+    if (type === 'image' && isValidUrl) { 
+      return <Image source={{ uri: avatarUrl }} style={styles.avatar} />; 
+    }
+
+    return (
+      <View style={[styles.avatar, { backgroundColor: task.userBg }]}>
+        <Text style={{ color: task.userColor, fontWeight: 'bold' }}>{task.userName ? task.userName.slice(0, 2).toUpperCase() : '??'}</Text>
+      </View>
     );
   };
 
-  const availableSwaps = tasks.filter(t => t.id !== selectedTask?.id);
+  const availableSwaps = tasks.filter(t => t.userId !== currentUser.id);
+
+  if (!currentWg) {
+    return (
+      <View style={styles.centerContainer}>
+        <Ionicons name="home-outline" size={64} color="#C7C7CC" />
+        <Text style={styles.centerText}>Du bist noch keiner WG beigetreten.</Text>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
-      {/* LISTENANSICHT */}
       <ScrollView showsVerticalScrollIndicator={false} style={styles.content}>
-        <Text style={styles.sectionTitle}>Wochenaufgaben</Text>
-        
+        <Text style={styles.sectionTitle}>Anstehende To-Dos</Text>
         {tasks.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <Ionicons name="cafe-outline" size={50} color="#C7C7CC" />
-            <Text style={styles.emptyText}>Alles erledigt! Keine Aufgaben vorhanden.</Text>
-          </View>
+          <View style={styles.emptyContainer}><Ionicons name="cafe-outline" size={50} color="#C7C7CC" /><Text style={styles.emptyText}>Keine Aufgaben.</Text></View>
         ) : (
-          tasks.map(task => (
-            <TouchableOpacity key={task.id} style={styles.taskCard} onPress={() => openDetails(task)}>
-              <View style={[styles.avatar, { backgroundColor: task.userBg }]}>
-                <Text style={{ color: task.userColor, fontWeight: 'bold' }}>
-                  {task.userName ? task.userName.slice(0, 2).toUpperCase() : '??'}
-                </Text>
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.taskTitle}>{task.title}</Text>
-                <Text style={styles.taskSub}>{task.dateDisplay} • {task.userName}</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color="#C7C7CC" />
-            </TouchableOpacity>
-          ))
+          tasks.map(task => {
+            const isInitiatorOfSwap = swapRequests.some(r => r.fromTaskId === task.id);
+            return (
+              <TouchableOpacity 
+                key={task.id} 
+                style={[styles.taskCard, isInitiatorOfSwap && styles.taskCardPending]} 
+                onPress={() => { setSelectedTask(task); setDetailViewMode('details'); setIsDetailModalVisible(true); }}
+              >
+                {renderTaskAvatar(task)}
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.taskTitle}>{task.title}</Text>
+                  <Text style={styles.taskSub}>
+                    {task.dateDisplay} • {task.userName} {isInitiatorOfSwap && <Text style={{color: '#FF9500', fontWeight: 'bold'}}> (🔄 Tausch läuft)</Text>}
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color="#C7C7CC" />
+              </TouchableOpacity>
+            );
+          })
         )}
-        <View style={{ height: 100 }} />
+        <View style={{ height: 110 }} />
       </ScrollView>
 
-      {/* PLUS BUTTON */}
-      <TouchableOpacity style={styles.fab} onPress={() => setIsAddModalVisible(true)}>
-        <Ionicons name="add" size={40} color="#FFF" />
-      </TouchableOpacity>
+      <TouchableOpacity style={styles.fab} onPress={() => setIsAddModalVisible(true)}><Ionicons name="add" size={40} color="#FFF" /></TouchableOpacity>
 
-      {/* MODAL: NEU / BEARBEITEN */}
+      {/* MODAL: ADD / EDIT */}
       <Modal visible={isAddModalVisible} animationType="slide" transparent>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.overlay}>
           <View style={styles.modalSheet}>
             <View style={styles.sheetHeader}>
-              <Text style={styles.modalTitle}>{editId ? "Bearbeiten" : "Neue Aufgabe"}</Text>
+              <Text style={styles.modalTitle}>{editId ? "Aufgabe editieren" : "Neue Aufgabe"}</Text>
               <TouchableOpacity onPress={resetForm}><Text style={styles.cancelLink}>Abbrechen</Text></TouchableOpacity>
             </View>
-
-            <TextInput 
-              style={styles.input} 
-              placeholder="Was ist zu tun?" 
-              value={title} 
-              onChangeText={setTitle} 
-            />
-            
-            <TouchableOpacity style={styles.input} onPress={() => setShowPicker(true)}>
-              <Text style={{fontSize: 16}}>📅 {formatDate(date)}</Text>
-            </TouchableOpacity>
-
-            {showPicker && (
-              <DateTimePicker 
-                value={date} 
-                mode="date" 
-                display={Platform.OS === 'ios' ? 'inline' : 'default'} 
-                onChange={(e, d) => { setShowPicker(Platform.OS === 'ios'); if(d) setDate(d); }}
-              />
-            )}
-
-            <Text style={styles.label}>Wer übernimmt?</Text>
-            <View style={styles.memberRow}>
-              {members.length === 0 ? (
-                <Text style={{color: '#8E8E93', fontStyle: 'italic'}}>Keine Mitglieder in Firebase gefunden.</Text>
-              ) : (
-                members.map(m => (
-                  <TouchableOpacity key={m.id} 
-                    style={[styles.memberChip, selectedMember?.id === m.id && { backgroundColor: '#000' }]}
-                    onPress={() => setSelectedMember(m)}>
-                    <Text style={{ color: selectedMember?.id === m.id ? '#FFF' : '#000', fontWeight: '500' }}>{m.name}</Text>
-                  </TouchableOpacity>
-                ))
-              )}
-            </View>
-
-            <TouchableOpacity style={styles.primaryBtn} onPress={handleSave}>
-              <Text style={styles.primaryBtnText}>{editId ? "Speichern" : "Hinzufügen"}</Text>
-            </TouchableOpacity>
+            <TextInput style={styles.input} placeholder="Was ist zu tun?" value={title} onChangeText={setTitle} />
+            <TouchableOpacity style={styles.input} onPress={() => setShowPicker(true)}><Text>📅 {formatDate(date)}</Text></TouchableOpacity>
+            {showPicker && <DateTimePicker value={date} mode="date" display={Platform.OS === 'ios' ? 'inline' : 'default'} onChange={(e, d) => { setShowPicker(Platform.OS === 'ios'); if(d) setDate(d); }} />}
+            <TextInput style={[styles.input, {height: 80, paddingTop: 12}]} placeholder="Notizen / Beschreibung..." multiline value={desc} onChangeText={setDesc} />
+            <TouchableOpacity style={styles.primaryBtn} onPress={handleSave}><Text style={styles.primaryBtnText}>Speichern</Text></TouchableOpacity>
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -242,73 +291,101 @@ export default function PlanerScreen() {
       {/* MODAL: DETAILS */}
       <Modal visible={isDetailModalVisible} animationType="slide" transparent>
         <View style={styles.overlay}>
-          {selectedTask && (
-            <View style={styles.modalSheet}>
-              <View style={styles.sheetHeader}>
-                <Text style={styles.hugeTitle}>{selectedTask.title}</Text>
-                <TouchableOpacity onPress={() => setIsDetailModalVisible(false)}>
-                  <Ionicons name="close-circle" size={32} color="#C7C7CC" />
-                </TouchableOpacity>
-              </View>
-              <Text style={styles.hugeSub}>{selectedTask.dateDisplay} • {selectedTask.userName}</Text>
-              
-              <View style={styles.divider} />
+          {selectedTask && (() => {
+            const activeSwap = swapRequests.find(r => r.fromTaskId === selectedTask.id);
+            const amITheTarget = activeSwap?.toUserId === currentUser.id;
 
-              <TouchableOpacity style={styles.swapBtnMain} onPress={() => setIsSwapMenuVisible(true)}>
-                <Ionicons name="swap-horizontal" size={22} color="#FFF" />
-                <Text style={styles.swapBtnText}>Gegen anderen Job tauschen</Text>
-              </TouchableOpacity>
+            if (detailViewMode === 'details') {
+              return (
+                <View style={styles.modalSheet}>
+                  <View style={styles.sheetHeader}>
+                    <Text style={styles.hugeTitle}>{selectedTask.title}</Text>
+                    <TouchableOpacity onPress={() => setIsDetailModalVisible(false)}><Ionicons name="close-circle" size={32} color="#C7C7CC" /></TouchableOpacity>
+                  </View>
+                  <Text style={styles.hugeSub}>{selectedTask.dateDisplay} • {selectedTask.userName}</Text>
+                  <View style={styles.divider} />
+                  
+                  <View style={[styles.typeBadge, selectedTask.type === 'system' ? styles.badgeWeekly : styles.badgeSingle]}>
+                    <Text style={[styles.badgeText, { color: selectedTask.type === 'system' ? '#34C759' : '#007AFF' }]}>
+                      {selectedTask.type === 'system' ? "Weekly" : "Single"}
+                    </Text>
+                  </View>
 
-              <View style={styles.actionRow}>
-                <TouchableOpacity style={styles.actionItem} onPress={() => {
-                  setEditId(selectedTask.id); setTitle(selectedTask.title);
-                  setDate(new Date(selectedTask.fullDate)); 
-                  setSelectedMember(members.find(m => m.id === selectedTask.userId));
-                  setIsDetailModalVisible(false); setIsAddModalVisible(true);
-                }}>
-                  <Ionicons name="create-outline" size={20} color="#007AFF" />
-                  <Text style={{color: '#007AFF', marginLeft: 5, fontWeight: '600'}}>Bearbeiten</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity style={styles.actionItem} onPress={() => handleDelete(selectedTask.id)}>
-                  <Ionicons name="trash-outline" size={20} color="#FF3B30" />
-                  <Text style={{color: '#FF3B30', marginLeft: 5, fontWeight: '600'}}>Löschen</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          )}
-        </View>
-      </Modal>
-
-      {/* MODAL: TAUSCH-LISTE */}
-      <Modal visible={isSwapMenuVisible} animationType="slide" transparent>
-        <View style={styles.overlay}>
-          <View style={[styles.modalSheet, { height: '70%' }]}>
-            <Text style={styles.modalTitle}>Tausch-Partner wählen</Text>
-            <ScrollView showsVerticalScrollIndicator={false}>
-              {availableSwaps.length === 0 ? (
-                <Text style={styles.emptyTextCenter}>Kein anderer Dienst zum Tauschen verfügbar.</Text>
-              ) : (
-                availableSwaps.map(item => (
-                  <TouchableOpacity key={item.id} style={styles.swapCard} onPress={() => executeSwap(item)}>
-                    <View style={[styles.miniAvatar, { backgroundColor: item.userBg }]}>
-                       <Text style={{color: item.userColor, fontSize: 10, fontWeight: 'bold'}}>
-                         {item.userName ? item.userName.slice(0,2).toUpperCase() : '??'}
-                       </Text>
+                  <Text style={styles.labelTitle}>Beschreibung</Text>
+                  <Text style={styles.descriptionBody}>{selectedTask.desc}</Text>
+                  
+                  {activeSwap && (
+                    <View style={styles.infoBoxActiveSwap}>
+                      <Text style={{fontWeight: '700', color: '#FF9500'}}>🔄 Tausch-Informationen</Text>
+                      <Text style={{fontSize: 14, color: '#1C1C1E', marginTop: 4}}>
+                        <Text style={{fontWeight: '700'}}>{activeSwap.fromUserName}</Text> möchte den Dienst <Text style={{fontWeight: '700'}}>"{activeSwap.fromTaskTitle}"</Text> gegen deinen Job <Text style={{fontWeight: '700'}}>"{activeSwap.toTaskTitle}"</Text> eintauschen.
+                      </Text>
                     </View>
-                    <View style={{flex: 1}}>
-                      <Text style={{fontWeight: '600'}}>{item.title}</Text>
-                      <Text style={{fontSize: 12, color: '#8E8E93'}}>{item.userName}</Text>
+                  )}
+
+                  {activeSwap && amITheTarget ? (
+                    <View style={styles.requestActionRow}>
+                      <TouchableOpacity style={[styles.reqBtn, { backgroundColor: '#34C759' }]} onPress={() => acceptSwapRequest(activeSwap)}>
+                        <Text style={styles.reqBtnText}>Tausch annehmen</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={[styles.reqBtn, { backgroundColor: '#FF3B30' }]} onPress={() => declineSwapRequest(activeSwap)}>
+                        <Text style={styles.reqBtnText}>Tausch ablehnen</Text>
+                      </TouchableOpacity>
                     </View>
-                    <Ionicons name="repeat" size={18} color="#007AFF" />
+                  ) : activeSwap ? (
+                    <View style={[styles.swapBtnMain, { backgroundColor: '#C7C7CC' }]}>
+                      <Text style={styles.swapBtnText}>Warten auf Bestätigung...</Text>
+                    </View>
+                  ) : (
+                    selectedTask.userId === currentUser.id ? (
+                      <TouchableOpacity style={styles.swapBtnMain} onPress={() => setDetailViewMode('swap')}>
+                        <Ionicons name="swap-horizontal" size={22} color="#FFF" />
+                        <Text style={styles.swapBtnText}>Job tauschen</Text>
+                      </TouchableOpacity>
+                    ) : null
+                  )}
+
+                  <View style={styles.actionRow}>
+                    <TouchableOpacity style={{flexDirection: 'row', alignItems: 'center'}} onPress={() => { setEditId(selectedTask.id); setTitle(selectedTask.title); setDesc(selectedTask.desc); setDate(new Date(selectedTask.fullDate)); setIsDetailModalVisible(false); setIsAddModalVisible(true); }}>
+                      <Ionicons name="create-outline" size={20} color="#007AFF" /><Text style={{color: '#007AFF', marginLeft: 5, fontWeight: '600'}}>Bearbeiten</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={{flexDirection: 'row', alignItems: 'center'}} onPress={() => handleDelete(selectedTask.id)}>
+                      <Ionicons name="trash-outline" size={20} color="#FF3B30" /><Text style={{color: '#FF3B30', marginLeft: 5, fontWeight: '600'}}>Löschen</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              );
+            }
+
+            return (
+              <View style={[styles.modalSheet, { height: '75%' }]}>
+                <View style={styles.sheetHeader}>
+                  <Text style={styles.modalTitle}>Dienst zum Tauschen wählen</Text>
+                  <TouchableOpacity onPress={() => setDetailViewMode('details')}><Text style={{ color: '#007AFF', fontWeight: 'bold', fontSize: 16 }}>Zurück</Text></TouchableOpacity>
+                </View>
+                <ScrollView showsVerticalScrollIndicator={false}>
+                  {availableSwaps.map(item => {
+                    const isSelected = selectedTargetTask?.id === item.id;
+                    return (
+                      <TouchableOpacity key={item.id} style={[styles.swapCard, isSelected && { borderColor: '#FF9500', borderWidth: 1.5 }]} onPress={() => setSelectedTargetTask(item)}>
+                        {renderTaskAvatar(item)}
+                        <View style={{ flex: 1, marginLeft: 5 }}>
+                          <Text style={{ fontWeight: '600', fontSize: 16 }}>{item.title}</Text>
+                          <Text style={{ fontSize: 13, color: '#8E8E93' }}>{item.dateDisplay} • {item.userName}</Text>
+                        </View>
+                        <Ionicons name={isSelected ? "radio-button-on" : "radio-button-off"} size={20} color={isSelected ? "#FF9500" : "#C7C7CC"} />
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+                {selectedTargetTask && (
+                  <TouchableOpacity style={[styles.swapBtnMain, { marginTop: 15 }]} onPress={createSwapRequest}>
+                    <Text style={styles.swapBtnText}>Tausch-Anfrage absenden</Text>
                   </TouchableOpacity>
-                ))
-              )}
-            </ScrollView>
-            <TouchableOpacity style={styles.closeBtn} onPress={() => setIsSwapMenuVisible(false)}>
-              <Text style={{fontWeight: 'bold', color: '#007AFF', fontSize: 16}}>Abbrechen</Text>
-            </TouchableOpacity>
-          </View>
+                )}
+              </View>
+            );
+          })()}
         </View>
       </Modal>
     </View>
@@ -317,35 +394,47 @@ export default function PlanerScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#FFF' },
-  content: { paddingHorizontal: 20 },
-  sectionTitle: { fontSize: 34, fontWeight: '800', marginVertical: 20, color: '#1C1C1E' },
-  emptyContainer: { alignItems: 'center', marginTop: 100 },
-  emptyText: { textAlign: 'center', marginTop: 15, color: '#8E8E93', fontSize: 16 },
-  emptyTextCenter: { textAlign: 'center', marginTop: 40, color: '#8E8E93' },
-  taskCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F2F2F7', padding: 18, borderRadius: 22, marginBottom: 12 },
-  avatar: { width: 46, height: 46, borderRadius: 15, justifyContent: 'center', alignItems: 'center', marginRight: 15 },
-  taskTitle: { fontSize: 18, fontWeight: '600', color: '#1C1C1E' },
-  taskSub: { fontSize: 14, color: '#8E8E93', marginTop: 3 },
-  fab: { position: 'absolute', bottom: 30, right: 25, width: 64, height: 64, backgroundColor: '#000', borderRadius: 32, justifyContent: 'center', alignItems: 'center', elevation: 8, shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 5, shadowOffset: {width: 0, height: 4} },
+  content: { paddingHorizontal: 20, paddingTop: 10 }, 
+  sectionTitle: { fontSize: 24, fontWeight: '800', marginVertical: 15, color: '#1C1C1E' },
+  emptyContainer: { alignItems: 'center', marginTop: 80 },
+  emptyText: { textAlign: 'center', marginTop: 15, color: '#8E8E93' },
+  taskCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F2F2F7', padding: 18, borderRadius: 22, marginBottom: 12, borderWidth: 1.5, borderColor: 'transparent' },
+  taskCardPending: { borderColor: '#FF9500', backgroundColor: '#FFF9F2' }, 
+  avatar: { width: 46, height: 46, borderRadius: 23, justifyContent: 'center', alignItems: 'center', marginRight: 12, overflow: 'hidden' }, 
+  taskTitle: { fontSize: 17, fontWeight: '600' },
+  taskSub: { fontSize: 14, color: '#8E8E93', marginTop: 2 },
+  fab: { position: 'absolute', bottom: 30, right: 25, width: 64, height: 64, backgroundColor: '#000', borderRadius: 32, justifyContent: 'center', alignItems: 'center', elevation: 5 },
   overlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.5)' },
-  modalSheet: { backgroundColor: '#FFF', borderTopLeftRadius: 35, borderTopRightRadius: 35, padding: 25, paddingBottom: 50 },
-  sheetHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
-  modalTitle: { fontSize: 24, fontWeight: 'bold' },
-  cancelLink: { color: '#FF3B30', fontSize: 17, fontWeight: '500' },
-  input: { backgroundColor: '#F2F2F7', padding: 18, borderRadius: 16, marginBottom: 12, fontSize: 16 },
-  label: { fontWeight: '700', marginBottom: 12, marginTop: 10, fontSize: 15 },
-  memberRow: { flexDirection: 'row', flexWrap: 'wrap', marginBottom: 25 },
-  memberChip: { paddingHorizontal: 18, paddingVertical: 10, borderRadius: 25, backgroundColor: '#F2F2F7', marginRight: 10, marginBottom: 10 },
-  primaryBtn: { backgroundColor: '#000', padding: 20, borderRadius: 20, alignItems: 'center', marginTop: 10 },
-  primaryBtnText: { color: '#FFF', fontSize: 18, fontWeight: 'bold' },
-  hugeTitle: { fontSize: 30, fontWeight: 'bold', flex: 1, color: '#1C1C1E' },
-  hugeSub: { fontSize: 18, color: '#007AFF', marginTop: 4, fontWeight: '600' },
-  divider: { height: 1, backgroundColor: '#E5E5EA', marginVertical: 25 },
-  swapBtnMain: { backgroundColor: '#FF9500', padding: 20, borderRadius: 20, flexDirection: 'row', justifyContent: 'center', alignItems: 'center' },
-  swapBtnText: { color: '#FFF', fontWeight: 'bold', fontSize: 17, marginLeft: 10 },
-  actionRow: { flexDirection: 'row', justifyContent: 'space-around', marginTop: 35 },
-  actionItem: { flexDirection: 'row', alignItems: 'center', padding: 10 },
-  swapCard: { flexDirection: 'row', alignItems: 'center', padding: 16, backgroundColor: '#F2F2F7', borderRadius: 18, marginBottom: 12 },
-  miniAvatar: { width: 34, height: 34, borderRadius: 10, marginRight: 12, justifyContent: 'center', alignItems: 'center' },
-  closeBtn: { marginTop: 25, alignItems: 'center', padding: 10 }
+  modalSheet: { backgroundColor: '#FFF', borderTopLeftRadius: 30, borderTopRightRadius: 30, padding: 25, paddingBottom: 40 },
+  sheetHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
+  modalTitle: { fontSize: 22, fontWeight: 'bold' },
+  cancelLink: { color: '#FF3B30', fontSize: 17 },
+  input: { backgroundColor: '#F2F2F7', padding: 16, borderRadius: 15, marginBottom: 12, fontSize: 16, color: '#000' },
+  label: { fontWeight: 'bold', marginBottom: 10 },
+  primaryBtn: { backgroundColor: '#000', padding: 18, borderRadius: 18, alignItems: 'center' },
+  primaryBtnText: { color: '#FFF', fontSize: 17, fontWeight: 'bold' },
+  hugeTitle: { fontSize: 28, fontWeight: 'bold', flex: 1 },
+  hugeSub: { fontSize: 16, color: '#8E8E93', marginTop: 2 },
+  divider: { height: 1, backgroundColor: '#E5E5EA', marginVertical: 15 },
+  typeBadge: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, alignSelf: 'flex-start', marginBottom: 15 },
+  badgeWeekly: { backgroundColor: '#EBFCEF' },
+  badgeSingle: { backgroundColor: '#EBF4FF' },
+  badgeText: { fontSize: 13, fontWeight: '700' },
+  labelTitle: { fontSize: 14, fontWeight: 'bold', color: '#8E8E93', textTransform: 'uppercase', marginBottom: 5 },
+  descriptionBody: { fontSize: 16, color: '#333', lineHeight: 22, marginBottom: 25 },
+  swapBtnMain: { backgroundColor: '#FF9500', padding: 18, borderRadius: 18, flexDirection: 'row', justifyContent: 'center', alignItems: 'center' },
+  swapBtnText: { color: '#FFF', fontWeight: 'bold', marginLeft: 10, fontSize: 16 },
+  actionRow: { flexDirection: 'row', justifyContent: 'space-around', marginTop: 30 },
+  swapCard: { flexDirection: 'row', alignItems: 'center', padding: 12, backgroundColor: '#F2F2F7', borderRadius: 16, marginBottom: 10, borderWidth: 1.5, borderColor: 'transparent' },
+  closeBtn: { marginTop: 20, alignItems: 'center' },
+  infoSubtext: { fontSize: 14, color: '#8E8E93', marginBottom: 15, lineHeight: 18 },
+  requestBoxApple: { backgroundColor: '#F2F2F7', padding: 16, borderRadius: 18, borderWidth: 1, borderColor: '#E5E5EA', marginBottom: 10 },
+  requestBoxTitle: { fontSize: 16, fontWeight: 'bold', color: '#FF9500', marginBottom: 4 },
+  requestBoxSub: { fontSize: 14, color: '#1C1C1E', lineHeight: 18, marginBottom: 12 },
+  requestActionRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 15 },
+  reqBtn: { flex: 0.48, paddingVertical: 14, borderRadius: 12, alignItems: 'center' },
+  reqBtnText: { color: '#FFF', fontWeight: 'bold', fontSize: 15 },
+  infoBoxActiveSwap: { backgroundColor: '#FFF9F2', padding: 14, borderRadius: 14, borderWidth: 1, borderColor: '#FFE2B8', marginBottom: 15 },
+  centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  centerText: { color: '#8E8E93', textAlign: 'center', marginHorizontal: 40, marginTop: 15, fontSize: 16 }
 });
