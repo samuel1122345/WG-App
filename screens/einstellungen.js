@@ -1,16 +1,31 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, TextInput, TouchableOpacity, ScrollView, Alert, Modal, Image } from 'react-native';
+import { StyleSheet, Text, View, TextInput, TouchableOpacity, ScrollView, Alert, Modal, Image, Platform, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker'; 
 import { db } from '../firebaseConfig';
 import { collection, setDoc, updateDoc, doc, query, where, onSnapshot, getDoc, deleteDoc, addDoc, getDocs } from 'firebase/firestore';
+import {
+  DEFAULT_TASK_END_TIME,
+  DEFAULT_TASK_START_TIME,
+  combineDateAndTime,
+  datesAreSameDay,
+  ensureEndAfterStart,
+  formatDateDisplay,
+  isUserBlocked,
+  normalizeTime,
+} from '../utils/calendarHelpers';
+import { buildNotificationKey, buildTaskTimeText, createNotificationOnce } from '../utils/notificationHelpers';
 
 import ProfilScreen from './profil';
 
+const TASKS_MODAL_WEB_TOP_OFFSET = 88;
+
 export default function EinstellungenScreen({ currentUser, currentWg }) {
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const [viewMode, setViewMode] = useState('menu'); 
   const [isTasksModalVisible, setIsTasksModalVisible] = useState(false);
+  const [tasksModalRenderKey, setTasksModalRenderKey] = useState(0);
   const [isWgAvatarModalVisible, setIsWgAvatarModalVisible] = useState(false);
   const [isProfilModalVisible, setIsProfilModalVisible] = useState(false); 
   const [isEditable, setIsEditable] = useState(false); 
@@ -30,11 +45,26 @@ export default function EinstellungenScreen({ currentUser, currentWg }) {
   const [taskTitle, setTaskTitle] = useState('');
   const [taskDesc, setTaskDesc] = useState(''); 
   const [taskTag, setTaskTag] = useState('weekly'); 
+  const [taskStartTime, setTaskStartTime] = useState(DEFAULT_TASK_START_TIME);
+  const [taskEndTime, setTaskEndTime] = useState(DEFAULT_TASK_END_TIME);
   const [assignmentMode, setAssignmentMode] = useState('rotierend'); 
   const [selectedMemberIds, setSelectedMemberIds] = useState([]); 
   const [editingTaskId, setEditingTaskId] = useState(null);
 
   const colors = ['#EBF4FF', '#EBFCEF', '#FFF9F2', '#FBF2FF', '#FFECEB', '#F2F2F7'];
+
+  useEffect(() => {
+    if (!isTasksModalVisible) return undefined;
+
+    // React Native Web berechnet das Modal in der iPhone-Vorschau manchmal erst nach
+    // dem ersten Layout korrekt. Dieser kleine Re-Layout-Impuls sorgt dafür, dass
+    // Header und Fertig-Button sofort an der richtigen Stelle sitzen.
+    const timer = setTimeout(() => {
+      setTasksModalRenderKey((current) => current + 1);
+    }, 0);
+
+    return () => clearTimeout(timer);
+  }, [isTasksModalVisible, windowWidth, windowHeight]);
 
   useEffect(() => {
     if (!currentWg) return;
@@ -129,6 +159,8 @@ export default function EinstellungenScreen({ currentUser, currentWg }) {
     try {
       const payload = { 
         title: taskTitle.trim(), desc: taskDesc.trim(), taskTag: taskTag,
+        startTime: normalizeTime(taskStartTime, DEFAULT_TASK_START_TIME),
+        endTime: normalizeTime(taskEndTime, DEFAULT_TASK_END_TIME),
         assignmentMode: assignmentMode, fixedMemberIds: assignmentMode === 'fest' ? selectedMemberIds : [], wgId: currentWg.id
       };
       if (editingTaskId) {
@@ -137,7 +169,7 @@ export default function EinstellungenScreen({ currentUser, currentWg }) {
       } else {
         await addDoc(collection(db, "recurringTasks"), payload);
       }
-      setTaskTitle(''); setTaskDesc(''); setTaskTag('weekly'); setAssignmentMode('rotierend'); setSelectedMemberIds([]);
+      setTaskTitle(''); setTaskDesc(''); setTaskTag('weekly'); setTaskStartTime(DEFAULT_TASK_START_TIME); setTaskEndTime(DEFAULT_TASK_END_TIME); setAssignmentMode('rotierend'); setSelectedMemberIds([]);
     } catch (e) { Alert.alert("Fehler", "Speichern fehlgeschlagen."); }
   };
 
@@ -159,60 +191,142 @@ export default function EinstellungenScreen({ currentUser, currentWg }) {
     try {
       const nextMonday = new Date();
       nextMonday.setDate(nextMonday.getDate() + ((1 + 7 - nextMonday.getDay()) % 7 || 7));
-      const targetDateDisplay = nextMonday.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: 'short' });
+      nextMonday.setHours(0, 0, 0, 0);
+      const targetDateDisplay = formatDateDisplay(nextMonday);
 
       const existingTasksSnap = await getDocs(query(collection(db, "tasks"), where("wgId", "==", currentWg.id)));
-      const existingTitlesThisWeek = existingTasksSnap.docs
-        .map(doc => doc.data())
-        .filter(t => t.dateDisplay === targetDateDisplay)
-        .map(t => t.title.toLowerCase().trim());
+      const existingTasks = existingTasksSnap.docs.map((taskDoc) => ({ id: taskDoc.id, ...taskDoc.data() }));
+
+      const calendarEventsSnap = await getDocs(query(collection(db, "calendarEvents"), where("wgId", "==", currentWg.id)));
+      const calendarEvents = calendarEventsSnap.docs.map((eventDoc) => ({ id: eventDoc.id, ...eventDoc.data() }));
 
       let taskCounts = {};
-      wgMembers.forEach(m => taskCounts[m.id] = 0);
+      wgMembers.forEach((m) => { taskCounts[m.id] = 0; });
 
       let distributionList = [];
+      let skippedBlockedTasks = [];
 
       for (let task of recurringTasks) {
-        if (existingTitlesThisWeek.includes(task.title.toLowerCase().trim())) {
-          continue; 
+        const alreadyExists = existingTasks.some((existingTask) => {
+          const existingDate = existingTask.startAt || existingTask.fullDate;
+          return (
+            existingTask.title?.toLowerCase?.().trim() === task.title.toLowerCase().trim() &&
+            datesAreSameDay(existingDate, nextMonday)
+          );
+        });
+
+        if (alreadyExists) {
+          continue;
         }
 
-        let chosenUserId = null;
+        const startTime = normalizeTime(task.startTime, DEFAULT_TASK_START_TIME);
+        const endTime = normalizeTime(task.endTime, DEFAULT_TASK_END_TIME);
+        const taskStartAt = combineDateAndTime(nextMonday, startTime);
+        const taskEndAt = ensureEndAfterStart(taskStartAt, combineDateAndTime(nextMonday, endTime));
 
-        if (task.assignmentMode === 'fest' && task.fixedMemberIds && task.fixedMemberIds.length > 0) {
-          const validFixedMembers = task.fixedMemberIds.filter(id => taskCounts[id] !== undefined);
-          if (validFixedMembers.length > 0) {
-            chosenUserId = validFixedMembers.reduce((a, b) => taskCounts[a] < taskCounts[b] ? a : b);
-          }
+        const candidateMembers = task.assignmentMode === 'fest' && task.fixedMemberIds && task.fixedMemberIds.length > 0
+          ? wgMembers.filter((member) => task.fixedMemberIds.includes(member.id))
+          : wgMembers;
+
+        const availableMembers = candidateMembers.filter((member) => {
+          return !isUserBlocked(member.id, taskStartAt, taskEndAt, calendarEvents);
+        });
+
+        if (availableMembers.length === 0) {
+          skippedBlockedTasks.push(`${task.title} (${startTime}-${endTime})`);
+          continue;
         }
 
-        if (!chosenUserId) {
-          chosenUserId = Object.keys(taskCounts).reduce((a, b) => taskCounts[a] < taskCounts[b] ? a : b);
-        }
+        const chosenMember = availableMembers.reduce((best, member) => {
+          return taskCounts[member.id] < taskCounts[best.id] ? member : best;
+        }, availableMembers[0]);
 
-        taskCounts[chosenUserId]++;
-        distributionList.push({ task, userId: chosenUserId });
+        taskCounts[chosenMember.id]++;
+        distributionList.push({ task, member: chosenMember, taskStartAt, taskEndAt, startTime, endTime });
       }
 
       if (distributionList.length === 0) {
         setIsTasksModalVisible(false);
-        Alert.alert("Up to date", "Alle Aufgaben für die aktuelle Woche sind bereits zugewiesen.");
+        if (skippedBlockedTasks.length > 0) {
+          Alert.alert(
+            "Keine freie Zuweisung",
+            `Für diese Aufgaben war niemand frei:
+
+${skippedBlockedTasks.join('\n')}`
+          );
+        } else {
+          Alert.alert("Up to date", "Alle Aufgaben für die aktuelle Woche sind bereits zugewiesen.");
+        }
         return;
       }
 
+      let notificationFailures = [];
+
       for (let item of distributionList) {
-        let member = wgMembers.find(m => m.id === item.userId);
-        await addDoc(collection(db, "tasks"), {
-          title: item.task.title, wgId: currentWg.id, userId: member.id, userName: member.name,
-          userColor: member.color || '#000', userBg: member.bg || '#F2F2F7', dateDisplay: targetDateDisplay,
-          fullDate: nextMonday.toISOString(), desc: item.task.desc || "Keine Beschreibung hinterlegt.", 
-          type: item.task.taskTag === 'single' ? 'manuell' : 'system' 
+        const createdTask = await addDoc(collection(db, "tasks"), {
+          title: item.task.title,
+          wgId: currentWg.id,
+          userId: item.member.id,
+          userName: item.member.name,
+          userColor: item.member.color || '#000',
+          userBg: item.member.avatarBg || item.member.bg || '#F2F2F7',
+          dateDisplay: targetDateDisplay,
+          dateNum: item.taskStartAt.getDate(),
+          fullDate: item.taskStartAt.toISOString(),
+          startAt: item.taskStartAt.toISOString(),
+          endAt: item.taskEndAt.toISOString(),
+          startTime: item.startTime,
+          endTime: item.endTime,
+          desc: item.task.desc || "Keine Beschreibung hinterlegt.",
+          type: item.task.taskTag === 'single' ? 'manuell' : 'system',
+          source: 'recurring_task',
+          recurringTaskId: item.task.id,
+          createdAt: new Date().toISOString(),
         });
+
+        try {
+          const taskTimeText = buildTaskTimeText(item.taskStartAt, item.taskEndAt);
+          await createNotificationOnce({
+            notificationKey: buildNotificationKey('task_assigned', currentWg.id, item.member.id, createdTask.id),
+            wgId: currentWg.id,
+            userId: item.member.id,
+            title: "Neue Aufgabe bekommen ✅",
+            message: taskTimeText
+              ? `Dir wurde die Aufgabe "${item.task.title}" zugewiesen. Termin: ${taskTimeText}.`
+              : `Dir wurde die Aufgabe "${item.task.title}" zugewiesen.`,
+            type: "task_assigned",
+            extraData: {
+              taskId: createdTask.id,
+              taskTitle: item.task.title,
+              startAt: item.taskStartAt.toISOString(),
+              endAt: item.taskEndAt.toISOString(),
+              source: 'recurring_task',
+            },
+          });
+        } catch (notificationError) {
+          console.error("Aufgaben-Mitteilung konnte nicht erstellt werden:", notificationError);
+          notificationFailures.push(item.task.title);
+        }
       }
 
       setIsTasksModalVisible(false);
-      Alert.alert("Verteilung beendet", "Aufgaben wurden zugewiesen.");
-    } catch (e) { Alert.alert("Fehler", "Zuweisung failed."); }
+      const skippedInfo = skippedBlockedTasks.length > 0
+        ? `
+
+Nicht zugewiesen wegen Kalenderblockern:
+${skippedBlockedTasks.join('\n')}`
+        : '';
+      const notificationInfo = notificationFailures.length > 0
+        ? `
+
+Hinweis: Für diese Aufgaben konnte keine Mitteilung erstellt werden:
+${notificationFailures.join('\n')}`
+        : '';
+      Alert.alert("Verteilung beendet", `Aufgaben wurden zugewiesen.${skippedInfo}${notificationInfo}`);
+    } catch (e) {
+      console.error(e);
+      Alert.alert("Fehler", "Zuweisung fehlgeschlagen.");
+    }
   };
 
   const renderMemberAvatar = (m) => {
@@ -352,7 +466,13 @@ export default function EinstellungenScreen({ currentUser, currentWg }) {
 
       <TouchableOpacity style={styles.iosLeaveLink} onPress={handleLeaveWg}><Text style={styles.iosLeaveLinkText}>Diese WG verlassen</Text></TouchableOpacity>
 
-      <Modal visible={isProfilModalVisible} animationType="slide">
+      <Modal
+        visible={isProfilModalVisible}
+        animationType="slide"
+        transparent
+        presentationStyle="overFullScreen"
+        onRequestClose={() => setIsProfilModalVisible(false)}
+      >
         <ProfilScreen currentUser={currentUser} onClose={() => setIsProfilModalVisible(false)} />
       </Modal>
 
@@ -392,11 +512,15 @@ export default function EinstellungenScreen({ currentUser, currentWg }) {
       </Modal>
 
       {/* POPUP MODAL: TASKS POOL */}
-      <Modal visible={isTasksModalVisible} animationType="slide">
-        <SafeAreaView style={{ flex: 1, backgroundColor: '#F2F2F7' }} edges={['top', 'left', 'right', 'bottom']}>
-          <View style={styles.modalHeaderExtended}>
-            <Text style={styles.modalTitleLarge}>Wochenaufgaben</Text>
-            <TouchableOpacity onPress={() => { setIsTasksModalVisible(false); setEditingTaskId(null); setTaskTitle(''); setTaskDesc(''); setTaskTag('weekly'); setAssignmentMode('rotierend'); setSelectedMemberIds([]); }}>
+      <Modal visible={isTasksModalVisible} animationType="slide" presentationStyle="fullScreen">
+        <View key={`tasks-modal-${tasksModalRenderKey}-${windowWidth}-${windowHeight}`} style={styles.tasksModalRoot}>
+          <SafeAreaView
+            style={styles.tasksModalSafeArea}
+            edges={Platform.OS === 'web' ? ['left', 'right', 'bottom'] : ['top', 'left', 'right', 'bottom']}
+          >
+            <View style={styles.modalHeaderExtended}>
+            <Text style={styles.modalTitleLarge} numberOfLines={1}>Wochenaufgaben</Text>
+            <TouchableOpacity style={styles.iosDoneButton} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }} onPress={() => { setIsTasksModalVisible(false); setEditingTaskId(null); setTaskTitle(''); setTaskDesc(''); setTaskTag('weekly'); setTaskStartTime(DEFAULT_TASK_START_TIME); setTaskEndTime(DEFAULT_TASK_END_TIME); setAssignmentMode('rotierend'); setSelectedMemberIds([]); }}>
               <Text style={styles.iosDoneLink}>Fertig</Text>
             </TouchableOpacity>
           </View>
@@ -404,6 +528,18 @@ export default function EinstellungenScreen({ currentUser, currentWg }) {
           <View style={styles.iosListGroupExtended}>
             <TextInput style={styles.modalInputApple} placeholder="Dienst-Name (z.B. Küche putzen)" value={taskTitle} onChangeText={setTaskTitle} />
             <TextInput style={[styles.modalInputApple, { height: 60 }]} placeholder="Beschreibung (Optional)" multiline value={taskDesc} onChangeText={setTaskDesc} />
+
+            <Text style={styles.miniSectionLabel}>Zeitfenster für Kalender-Blocker:</Text>
+            <View style={styles.timeInputRow}>
+              <View style={styles.timeInputHalf}>
+                <Text style={styles.timeInputLabel}>Start</Text>
+                <TextInput style={styles.modalInputApple} placeholder="18:00" value={taskStartTime} onChangeText={setTaskStartTime} keyboardType="numbers-and-punctuation" />
+              </View>
+              <View style={styles.timeInputHalf}>
+                <Text style={styles.timeInputLabel}>Ende</Text>
+                <TextInput style={styles.modalInputApple} placeholder="19:00" value={taskEndTime} onChangeText={setTaskEndTime} keyboardType="numbers-and-punctuation" />
+              </View>
+            </View>
             
             <Text style={styles.miniSectionLabel}>Typ-Tag festlegen:</Text>
             <View style={styles.typeRow}>
@@ -443,9 +579,9 @@ export default function EinstellungenScreen({ currentUser, currentWg }) {
                 <View key={t.id} style={[styles.taskManageRowApple, index === recurringTasks.length - 1 && { borderBottomWidth: 0 }]}>
                   <View style={{ flex: 1 }}>
                     <Text style={{ fontSize: 16, fontWeight: '600' }}>{t.title}</Text>
-                    <Text style={{ fontSize: 12, color: t.assignmentMode === 'fest' ? '#FF9500' : '#8E8E93', marginTop: 2 }}>{t.assignmentMode === 'fest' ? `📌 Fest (${t.fixedMemberIds?.length || 0} Personen)` : '🎲 Rotierend'} • Tag: {t.taskTag || 'weekly'}</Text>
+                    <Text style={{ fontSize: 12, color: t.assignmentMode === 'fest' ? '#FF9500' : '#8E8E93', marginTop: 2 }}>{t.assignmentMode === 'fest' ? `📌 Fest (${t.fixedMemberIds?.length || 0} Personen)` : '🎲 Rotierend'} • {t.startTime || DEFAULT_TASK_START_TIME}-{t.endTime || DEFAULT_TASK_END_TIME} • Tag: {t.taskTag || 'weekly'}</Text>
                   </View>
-                  <TouchableOpacity onPress={() => { setEditingTaskId(t.id); setTaskTitle(t.title); setTaskDesc(t.desc || ''); setTaskTag(t.taskTag || 'weekly'); setAssignmentMode(t.assignmentMode || 'rotierend'); setSelectedMemberIds(t.fixedMemberIds || []); }} style={{ marginRight: 15 }}><Ionicons name="pencil-outline" size={20} color="#007AFF" /></TouchableOpacity>
+                  <TouchableOpacity onPress={() => { setEditingTaskId(t.id); setTaskTitle(t.title); setTaskDesc(t.desc || ''); setTaskTag(t.taskTag || 'weekly'); setTaskStartTime(t.startTime || DEFAULT_TASK_START_TIME); setTaskEndTime(t.endTime || DEFAULT_TASK_END_TIME); setAssignmentMode(t.assignmentMode || 'rotierend'); setSelectedMemberIds(t.fixedMemberIds || []); }} style={{ marginRight: 15 }}><Ionicons name="pencil-outline" size={20} color="#007AFF" /></TouchableOpacity>
                   <TouchableOpacity onPress={() => handleDeleteRecurringTask(t.id)}><Ionicons name="trash-outline" size={20} color="#FF3B30" /></TouchableOpacity>
                 </View>
               ))}
@@ -458,7 +594,8 @@ export default function EinstellungenScreen({ currentUser, currentWg }) {
               <Text style={styles.rollBtnAppleText}>Aufgaben zuweisen</Text>
             </TouchableOpacity>
           </View>
-        </SafeAreaView>
+          </SafeAreaView>
+        </View>
       </Modal>
     </ScrollView>
   );
@@ -508,8 +645,11 @@ const styles = StyleSheet.create({
   formTitle: { fontSize: 26, fontWeight: 'bold', marginBottom: 20, textAlign: 'center' },
   iOSInput: { backgroundColor: '#FFF', padding: 16, borderRadius: 12, marginBottom: 12, fontSize: 16, borderWidth: 0.5, borderColor: '#C6C6C8' },
   backLink: { marginTop: 15, alignItems: 'center' },
-  modalHeaderExtended: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 16, backgroundColor: '#FFF', borderBottomWidth: 0.5, borderBottomColor: '#C6C6C8' },
-  modalTitleLarge: { fontSize: 24, fontWeight: 'bold', color: '#000' },
+  tasksModalRoot: { flex: 1, backgroundColor: '#F2F2F7', paddingTop: Platform.OS === 'web' ? TASKS_MODAL_WEB_TOP_OFFSET : 0 },
+  tasksModalSafeArea: { flex: 1, backgroundColor: '#F2F2F7' },
+  modalHeaderExtended: { minHeight: 64, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 12, backgroundColor: '#FFF', borderBottomWidth: 0.5, borderBottomColor: '#C6C6C8', zIndex: 20 },
+  modalTitleLarge: { flex: 1, marginRight: 12, fontSize: 24, fontWeight: 'bold', color: '#000' },
+  iosDoneButton: { minWidth: 72, minHeight: 44, justifyContent: 'center', alignItems: 'flex-end' },
   iosDoneLink: { color: '#007AFF', fontSize: 16, fontWeight: 'bold' },
   iosListGroupExtended: { backgroundColor: '#FFF', padding: 16, borderRadius: 12, margin: 16, borderWidth: 0.5, borderColor: '#E5E5EA' },
   modalInputApple: { backgroundColor: '#F2F2F7', padding: 14, borderRadius: 10, fontSize: 16, color: '#000', marginBottom: 10 },
@@ -523,6 +663,9 @@ const styles = StyleSheet.create({
   btnAppleAdd: { backgroundColor: '#1C1C1E', padding: 14, borderRadius: 10, alignItems: 'center', marginTop: 15 },
   btnAppleAddText: { color: '#FFF', fontWeight: '700', fontSize: 15 },
   taskManageRowApple: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingRight: 16, borderBottomWidth: 0.5, borderBottomColor: '#E5E5EA' },
+  timeInputRow: { flexDirection: 'row', justifyContent: 'space-between' },
+  timeInputHalf: { width: '48%' },
+  timeInputLabel: { fontSize: 12, fontWeight: '700', color: '#8E8E93', marginBottom: 4, marginLeft: 2 },
   rollBtnApple: { backgroundColor: '#34C759', padding: 16, borderRadius: 12, flexDirection: 'row', justifyContent: 'center', alignItems: 'center' },
   rollBtnAppleText: { color: '#FFF', fontWeight: 'bold', fontSize: 16, marginLeft: 10 }
 });
