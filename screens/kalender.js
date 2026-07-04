@@ -315,9 +315,6 @@ export default function KalenderScreen({
             <Text style={styles.sectionTitle}>{formatDateDisplay(selectedDate)}</Text>
             <Text style={styles.sectionSubTitle}>{selectedDayItems.length} Einträge</Text>
           </View>
-          <TouchableOpacity style={styles.addSmallButton} onPress={openAddModal}>
-            <Ionicons name="add" size={20} color="#FFF" />
-          </TouchableOpacity>
         </View>
 
         {selectedDayItems.length === 0 ? (
@@ -470,7 +467,7 @@ const styles = StyleSheet.create({
   gridCellToday: { borderWidth: 1, borderColor: '#FF3B30', borderRadius: 22 },
   gridCellTextActive: { color: '#FFF', fontWeight: '600' },
   dotIndicator: { width: 4, height: 4, borderRadius: 2, backgroundColor: '#8E8E93', position: 'absolute', bottom: 4 },
-  sectionHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
+  sectionHeaderRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 15 },
   sectionTitle: { fontSize: 20, fontWeight: 'bold', color: '#000' },
   sectionSubTitle: { fontSize: 13, color: '#8E8E93', marginTop: 2 },
   addSmallButton: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center' },

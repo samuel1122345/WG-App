@@ -15,6 +15,7 @@ import KalenderScreen from './screens/kalender';
 import EinstellungenScreen from './screens/einstellungen';
 import KontoScreen from './screens/konto';
 import BenachrichtigungenScreen from './screens/benachrichtigungen';
+import TodosScreen from './screens/todos';
 import { syncAutomaticNotifications } from './utils/notificationHelpers';
 
 // --- NAV-BUTTON KOMPONENTE ---
@@ -260,10 +261,13 @@ function AppContent() {
           />
         )}
         {activeTab === 'To-Do' && (
-          <View style={styles.placeholderContainer}>
-            <Ionicons name="list-circle-outline" size={48} color="#C7C7CC" />
-            <Text style={styles.placeholderText}>Hier folgen die Checklisten...</Text>
-          </View>
+          <TodosScreen
+            currentUser={currentUser}
+            currentWg={currentWg}
+            allTasks={allTasks}
+            calendarEvents={calendarEvents}
+            members={wgMembers}
+          />
         )}
         {activeTab === 'WG' && <EinstellungenScreen currentUser={currentUser} currentWg={currentWg} />}
       </View>

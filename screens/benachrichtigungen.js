@@ -25,6 +25,8 @@ export default function BenachrichtigungenScreen({ currentUser, currentWg, onClo
         return { name: 'alarm', color: '#FF9500' };
       case 'birthday_tomorrow':
         return { name: 'gift', color: '#AF52DE' };
+      case 'todo_added':
+        return { name: 'list-circle', color: '#5856D6' };
       default:
         return { name: 'notifications', color: '#8E8E93' };
     }

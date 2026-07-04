@@ -181,6 +181,19 @@ export default function EinstellungenScreen({ currentUser, currentWg }) {
     }
   };
 
+  const closeTasksModal = () => {
+    setIsTasksModalVisible(false);
+    setEditingTaskId(null);
+    setTaskTitle('');
+    setTaskDesc('');
+    setTaskTag('weekly');
+    setTaskStartTime(DEFAULT_TASK_START_TIME);
+    setTaskEndTime(DEFAULT_TASK_END_TIME);
+    setAssignmentMode('rotierend');
+    setSelectedMemberIds([]);
+  };
+
+
   const handleDeleteRecurringTask = async (id) => {
     try { await deleteDoc(doc(db, "recurringTasks", id)); } catch (e) { Alert.alert("Fehler", "Löschen failed."); }
   };
@@ -512,89 +525,110 @@ ${notificationFailures.join('\n')}`
       </Modal>
 
       {/* POPUP MODAL: TASKS POOL */}
-      <Modal visible={isTasksModalVisible} animationType="slide" presentationStyle="fullScreen">
-        <View key={`tasks-modal-${tasksModalRenderKey}-${windowWidth}-${windowHeight}`} style={styles.tasksModalRoot}>
-          <SafeAreaView
-            style={styles.tasksModalSafeArea}
-            edges={Platform.OS === 'web' ? ['left', 'right', 'bottom'] : ['top', 'left', 'right', 'bottom']}
+      <Modal
+        visible={isTasksModalVisible}
+        animationType="slide"
+        transparent
+        presentationStyle="overFullScreen"
+        onRequestClose={closeTasksModal}
+      >
+        <View style={styles.tasksSheetOverlay}>
+          <TouchableOpacity style={styles.tasksSheetBackdrop} activeOpacity={1} onPress={closeTasksModal} />
+
+          <View
+            style={[
+              styles.tasksBottomSheet,
+              { height: Math.min(Math.max(windowHeight * 0.68, 480), 640) },
+            ]}
           >
-            <View style={styles.modalHeaderExtended}>
-            <Text style={styles.modalTitleLarge} numberOfLines={1}>Wochenaufgaben</Text>
-            <TouchableOpacity style={styles.iosDoneButton} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }} onPress={() => { setIsTasksModalVisible(false); setEditingTaskId(null); setTaskTitle(''); setTaskDesc(''); setTaskTag('weekly'); setTaskStartTime(DEFAULT_TASK_START_TIME); setTaskEndTime(DEFAULT_TASK_END_TIME); setAssignmentMode('rotierend'); setSelectedMemberIds([]); }}>
-              <Text style={styles.iosDoneLink}>Fertig</Text>
-            </TouchableOpacity>
-          </View>
+            <View style={styles.tasksSheetHandle} />
 
-          <View style={styles.iosListGroupExtended}>
-            <TextInput style={styles.modalInputApple} placeholder="Dienst-Name (z.B. Küche putzen)" value={taskTitle} onChangeText={setTaskTitle} />
-            <TextInput style={[styles.modalInputApple, { height: 60 }]} placeholder="Beschreibung (Optional)" multiline value={taskDesc} onChangeText={setTaskDesc} />
-
-            <Text style={styles.miniSectionLabel}>Zeitfenster für Kalender-Blocker:</Text>
-            <View style={styles.timeInputRow}>
-              <View style={styles.timeInputHalf}>
-                <Text style={styles.timeInputLabel}>Start</Text>
-                <TextInput style={styles.modalInputApple} placeholder="18:00" value={taskStartTime} onChangeText={setTaskStartTime} keyboardType="numbers-and-punctuation" />
-              </View>
-              <View style={styles.timeInputHalf}>
-                <Text style={styles.timeInputLabel}>Ende</Text>
-                <TextInput style={styles.modalInputApple} placeholder="19:00" value={taskEndTime} onChangeText={setTaskEndTime} keyboardType="numbers-and-punctuation" />
-              </View>
-            </View>
-            
-            <Text style={styles.miniSectionLabel}>Typ-Tag festlegen:</Text>
-            <View style={styles.typeRow}>
-              <TouchableOpacity style={[styles.tagSelectorChip, taskTag === 'weekly' && { backgroundColor: '#34C759' }]} onPress={() => setTaskTag('weekly')}><Text style={[styles.tagSelectorText, taskTag === 'weekly' && { color: '#FFF' }]}>Weekly</Text></TouchableOpacity>
-              <TouchableOpacity style={[styles.tagSelectorChip, taskTag === 'single' && { backgroundColor: '#007AFF' }]} onPress={() => setTaskTag('single')}><Text style={[styles.tagSelectorText, taskTag === 'single' && { color: '#FFF' }]}>Single</Text></TouchableOpacity>
+            <View style={styles.tasksSheetHeader}>
+              <Text style={styles.tasksSheetTitle} numberOfLines={1}>Wochenaufgaben</Text>
+              <TouchableOpacity
+                style={styles.iosDoneButton}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                onPress={closeTasksModal}
+              >
+                <Text style={styles.iosDoneLink}>Fertig</Text>
+              </TouchableOpacity>
             </View>
 
-            <Text style={styles.miniSectionLabel}>Vergabe-Modus:</Text>
-            <View style={styles.typeRow}>
-              <TouchableOpacity style={[styles.tagSelectorChip, assignmentMode === 'rotierend' && { backgroundColor: '#000' }]} onPress={() => setAssignmentMode('rotierend')}><Text style={[styles.tagSelectorText, assignmentMode === 'rotierend' && { color: '#FFF' }]}>🎲 Rotierend</Text></TouchableOpacity>
-              <TouchableOpacity style={[styles.tagSelectorChip, assignmentMode === 'fest' && { backgroundColor: '#FF9500' }]} onPress={() => setAssignmentMode('fest')}><Text style={[styles.tagSelectorText, assignmentMode === 'fest' && { color: '#FFF' }]}>📌 Fest zugewiesen</Text></TouchableOpacity>
-            </View>
+            <ScrollView
+              style={styles.tasksSheetScroll}
+              contentContainerStyle={styles.tasksSheetScrollContent}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+            >
+              <View style={styles.iosListGroupExtended}>
+                <TextInput style={styles.modalInputApple} placeholder="Dienst-Name (z.B. Küche putzen)" value={taskTitle} onChangeText={setTaskTitle} />
+                <TextInput style={[styles.modalInputApple, { height: 60 }]} placeholder="Beschreibung (Optional)" multiline value={taskDesc} onChangeText={setTaskDesc} />
 
-            {assignmentMode === 'fest' && (
-              <View style={styles.dropdownContainer}>
-                <Text style={styles.dropdownTitle}>Mitbewohner auswählen:</Text>
-                {wgMembers.map(m => {
-                  const isSelected = selectedMemberIds.includes(m.id);
-                  return (
-                    <TouchableOpacity key={m.id} style={styles.dropdownRow} onPress={() => toggleMemberSelection(m.id)}>
-                      {renderMemberAvatar(m)}
-                      <Text style={[styles.dropdownMemberName, isSelected && { fontWeight: '700', color: '#FF9500' }]}>{m.name}</Text>
-                      <Ionicons name={isSelected ? "checkbox" : "square-outline"} size={20} color={isSelected ? "#FF9500" : "#C7C7CC"} />
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            )}
-
-            <TouchableOpacity style={styles.btnAppleAdd} onPress={handleSaveRecurringTask}><Text style={styles.btnAppleAddText}>{editingTaskId ? "Dienst aktualisieren" : "Dienst im Pool anlegen"}</Text></TouchableOpacity>
-          </View>
-
-          <Text style={styles.iosSectionHeading}>Aufgabenpool ({recurringTasks.length})</Text>
-          <ScrollView style={{ paddingHorizontal: 16 }} showsVerticalScrollIndicator={false}>
-            <View style={styles.iosListGroup}>
-              {recurringTasks.map((t, index) => (
-                <View key={t.id} style={[styles.taskManageRowApple, index === recurringTasks.length - 1 && { borderBottomWidth: 0 }]}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ fontSize: 16, fontWeight: '600' }}>{t.title}</Text>
-                    <Text style={{ fontSize: 12, color: t.assignmentMode === 'fest' ? '#FF9500' : '#8E8E93', marginTop: 2 }}>{t.assignmentMode === 'fest' ? `📌 Fest (${t.fixedMemberIds?.length || 0} Personen)` : '🎲 Rotierend'} • {t.startTime || DEFAULT_TASK_START_TIME}-{t.endTime || DEFAULT_TASK_END_TIME} • Tag: {t.taskTag || 'weekly'}</Text>
+                <Text style={styles.miniSectionLabel}>Zeitfenster für Kalender-Blocker:</Text>
+                <View style={styles.timeInputRow}>
+                  <View style={styles.timeInputHalf}>
+                    <Text style={styles.timeInputLabel}>Start</Text>
+                    <TextInput style={styles.modalInputApple} placeholder="18:00" value={taskStartTime} onChangeText={setTaskStartTime} keyboardType="numbers-and-punctuation" />
                   </View>
-                  <TouchableOpacity onPress={() => { setEditingTaskId(t.id); setTaskTitle(t.title); setTaskDesc(t.desc || ''); setTaskTag(t.taskTag || 'weekly'); setTaskStartTime(t.startTime || DEFAULT_TASK_START_TIME); setTaskEndTime(t.endTime || DEFAULT_TASK_END_TIME); setAssignmentMode(t.assignmentMode || 'rotierend'); setSelectedMemberIds(t.fixedMemberIds || []); }} style={{ marginRight: 15 }}><Ionicons name="pencil-outline" size={20} color="#007AFF" /></TouchableOpacity>
-                  <TouchableOpacity onPress={() => handleDeleteRecurringTask(t.id)}><Ionicons name="trash-outline" size={20} color="#FF3B30" /></TouchableOpacity>
+                  <View style={styles.timeInputHalf}>
+                    <Text style={styles.timeInputLabel}>Ende</Text>
+                    <TextInput style={styles.modalInputApple} placeholder="19:00" value={taskEndTime} onChangeText={setTaskEndTime} keyboardType="numbers-and-punctuation" />
+                  </View>
                 </View>
-              ))}
-            </View>
-          </ScrollView>
 
-          <View style={{ padding: 16, backgroundColor: '#F2F2F7' }}>
-            <TouchableOpacity style={styles.rollBtnApple} onPress={distributeTasks}>
-              <Ionicons name="shuffle" size={20} color="#FFF" />
-              <Text style={styles.rollBtnAppleText}>Aufgaben zuweisen</Text>
-            </TouchableOpacity>
+                <Text style={styles.miniSectionLabel}>Typ-Tag festlegen:</Text>
+                <View style={styles.typeRow}>
+                  <TouchableOpacity style={[styles.tagSelectorChip, taskTag === 'weekly' && { backgroundColor: '#34C759' }]} onPress={() => setTaskTag('weekly')}><Text style={[styles.tagSelectorText, taskTag === 'weekly' && { color: '#FFF' }]}>Weekly</Text></TouchableOpacity>
+                  <TouchableOpacity style={[styles.tagSelectorChip, taskTag === 'single' && { backgroundColor: '#007AFF' }]} onPress={() => setTaskTag('single')}><Text style={[styles.tagSelectorText, taskTag === 'single' && { color: '#FFF' }]}>Single</Text></TouchableOpacity>
+                </View>
+
+                <Text style={styles.miniSectionLabel}>Vergabe-Modus:</Text>
+                <View style={styles.typeRow}>
+                  <TouchableOpacity style={[styles.tagSelectorChip, assignmentMode === 'rotierend' && { backgroundColor: '#000' }]} onPress={() => setAssignmentMode('rotierend')}><Text style={[styles.tagSelectorText, assignmentMode === 'rotierend' && { color: '#FFF' }]}>🎲 Rotierend</Text></TouchableOpacity>
+                  <TouchableOpacity style={[styles.tagSelectorChip, assignmentMode === 'fest' && { backgroundColor: '#FF9500' }]} onPress={() => setAssignmentMode('fest')}><Text style={[styles.tagSelectorText, assignmentMode === 'fest' && { color: '#FFF' }]}>📌 Fest zugewiesen</Text></TouchableOpacity>
+                </View>
+
+                {assignmentMode === 'fest' && (
+                  <View style={styles.dropdownContainer}>
+                    <Text style={styles.dropdownTitle}>Mitbewohner auswählen:</Text>
+                    {wgMembers.map(m => {
+                      const isSelected = selectedMemberIds.includes(m.id);
+                      return (
+                        <TouchableOpacity key={m.id} style={styles.dropdownRow} onPress={() => toggleMemberSelection(m.id)}>
+                          {renderMemberAvatar(m)}
+                          <Text style={[styles.dropdownMemberName, isSelected && { fontWeight: '700', color: '#FF9500' }]}>{m.name}</Text>
+                          <Ionicons name={isSelected ? "checkbox" : "square-outline"} size={20} color={isSelected ? "#FF9500" : "#C7C7CC"} />
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                )}
+
+                <TouchableOpacity style={styles.btnAppleAdd} onPress={handleSaveRecurringTask}><Text style={styles.btnAppleAddText}>{editingTaskId ? "Dienst aktualisieren" : "Dienst im Pool anlegen"}</Text></TouchableOpacity>
+              </View>
+
+              <Text style={styles.iosSectionHeading}>Aufgabenpool ({recurringTasks.length})</Text>
+              <View style={styles.iosListGroup}>
+                {recurringTasks.map((t, index) => (
+                  <View key={t.id} style={[styles.taskManageRowApple, index === recurringTasks.length - 1 && { borderBottomWidth: 0 }]}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 16, fontWeight: '600' }}>{t.title}</Text>
+                      <Text style={{ fontSize: 12, color: t.assignmentMode === 'fest' ? '#FF9500' : '#8E8E93', marginTop: 2 }}>{t.assignmentMode === 'fest' ? `📌 Fest (${t.fixedMemberIds?.length || 0} Personen)` : '🎲 Rotierend'} • {t.startTime || DEFAULT_TASK_START_TIME}-{t.endTime || DEFAULT_TASK_END_TIME} • Tag: {t.taskTag || 'weekly'}</Text>
+                    </View>
+                    <TouchableOpacity onPress={() => { setEditingTaskId(t.id); setTaskTitle(t.title); setTaskDesc(t.desc || ''); setTaskTag(t.taskTag || 'weekly'); setTaskStartTime(t.startTime || DEFAULT_TASK_START_TIME); setTaskEndTime(t.endTime || DEFAULT_TASK_END_TIME); setAssignmentMode(t.assignmentMode || 'rotierend'); setSelectedMemberIds(t.fixedMemberIds || []); }} style={{ marginRight: 15 }}><Ionicons name="pencil-outline" size={20} color="#007AFF" /></TouchableOpacity>
+                    <TouchableOpacity onPress={() => handleDeleteRecurringTask(t.id)}><Ionicons name="trash-outline" size={20} color="#FF3B30" /></TouchableOpacity>
+                  </View>
+                ))}
+              </View>
+            </ScrollView>
+
+            <View style={styles.tasksSheetFooter}>
+              <TouchableOpacity style={styles.rollBtnApple} onPress={distributeTasks}>
+                <Ionicons name="shuffle" size={20} color="#FFF" />
+                <Text style={styles.rollBtnAppleText}>Aufgaben zuweisen</Text>
+              </TouchableOpacity>
+            </View>
           </View>
-          </SafeAreaView>
         </View>
       </Modal>
     </ScrollView>
@@ -645,6 +679,15 @@ const styles = StyleSheet.create({
   formTitle: { fontSize: 26, fontWeight: 'bold', marginBottom: 20, textAlign: 'center' },
   iOSInput: { backgroundColor: '#FFF', padding: 16, borderRadius: 12, marginBottom: 12, fontSize: 16, borderWidth: 0.5, borderColor: '#C6C6C8' },
   backLink: { marginTop: 15, alignItems: 'center' },
+  tasksSheetOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.28)' },
+  tasksSheetBackdrop: { ...StyleSheet.absoluteFillObject },
+  tasksBottomSheet: { width: '100%', maxWidth: 720, alignSelf: 'center', backgroundColor: '#F2F2F7', borderTopLeftRadius: 28, borderTopRightRadius: 28, overflow: 'hidden', zIndex: 2, shadowColor: '#000', shadowOpacity: 0.18, shadowRadius: 14, shadowOffset: { width: 0, height: -4 }, elevation: 12 },
+  tasksSheetHandle: { width: 46, height: 5, borderRadius: 999, backgroundColor: '#D1D1D6', alignSelf: 'center', marginTop: 10, marginBottom: 4 },
+  tasksSheetHeader: { minHeight: 58, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingBottom: 10, backgroundColor: '#F2F2F7', borderBottomWidth: 0.5, borderBottomColor: '#C6C6C8' },
+  tasksSheetTitle: { flex: 1, marginRight: 12, fontSize: 24, fontWeight: 'bold', color: '#000' },
+  tasksSheetScroll: { flex: 1 },
+  tasksSheetScrollContent: { paddingBottom: 20 },
+  tasksSheetFooter: { paddingHorizontal: 16, paddingTop: 10, paddingBottom: Platform.OS === 'web' ? 18 : 24, backgroundColor: '#F2F2F7', borderTopWidth: 0.5, borderTopColor: '#D1D1D6' },
   tasksModalRoot: { flex: 1, backgroundColor: '#F2F2F7', paddingTop: Platform.OS === 'web' ? TASKS_MODAL_WEB_TOP_OFFSET : 0 },
   tasksModalSafeArea: { flex: 1, backgroundColor: '#F2F2F7' },
   modalHeaderExtended: { minHeight: 64, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 12, backgroundColor: '#FFF', borderBottomWidth: 0.5, borderBottomColor: '#C6C6C8', zIndex: 20 },
