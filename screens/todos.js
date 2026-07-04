@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
   Modal,
@@ -22,6 +23,7 @@ import {
   sortTodoItems,
   visibleTodoForUser,
 } from '../utils/todoAiHelpers';
+import { generateTodoSuggestionsWithGemini } from '../utils/realAiTodoHelpers';
 import { formatDateDisplay, formatTimeRange, getItemEnd, getItemStart } from '../utils/calendarHelpers';
 
 const PRIVACY_PRIVATE = 'private';
@@ -93,6 +95,10 @@ export default function TodosScreen({ currentUser, currentWg, allTasks = [], cal
   const [isAiVisible, setIsAiVisible] = useState(false);
   const [editingTodo, setEditingTodo] = useState(null);
   const [isSavingTodo, setIsSavingTodo] = useState(false);
+  const [geminiSuggestions, setGeminiSuggestions] = useState([]);
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [aiStatusText, setAiStatusText] = useState('');
+  const [lastAiGeneratedAt, setLastAiGeneratedAt] = useState(null);
 
   const [formTitle, setFormTitle] = useState('');
   const [formDesc, setFormDesc] = useState('');
@@ -455,6 +461,47 @@ export default function TodosScreen({ currentUser, currentWg, allTasks = [], cal
     ]);
   };
 
+  const openAiAssistant = () => {
+    setIsAiVisible(true);
+    if (geminiSuggestions.length === 0 && !lastAiGeneratedAt) {
+      setAiStatusText('Es wurde noch kein Live-Vorschlag geladen. Tippe auf „Neu laden“, um Gemini einmal gezielt zu fragen. Bis dahin siehst du lokale Smart-Vorschläge ohne KI-Verbrauch.');
+    }
+  };
+
+  const refreshAiSuggestions = async () => {
+    if (isAiLoading) return;
+
+    setAiStatusText('');
+    setIsAiLoading(true);
+
+    try {
+      const suggestions = await generateTodoSuggestionsWithGemini({
+        currentUser,
+        currentWg,
+        calendarEvents,
+        tasks: allTasks,
+        members,
+        existingTodos: todos,
+      });
+
+      setGeminiSuggestions(suggestions);
+      setLastAiGeneratedAt(new Date());
+
+      if (suggestions.length === 0) {
+        setAiStatusText('Gemini hat gerade keine passenden neuen Vorschläge gefunden. Lokale Smart-Vorschläge bleiben als Backup sichtbar.');
+      }
+    } catch (error) {
+      console.warn('Gemini To-Do-Assistent nicht erreichbar:', error);
+      setAiStatusText(
+        geminiSuggestions.length > 0
+          ? 'Gemini war gerade nicht erreichbar. Die zuletzt geladenen Vorschläge bleiben sichtbar.'
+          : 'Echte KI ist gerade nicht erreichbar. Unten siehst du lokale Smart-Vorschläge als Backup.'
+      );
+    } finally {
+      setIsAiLoading(false);
+    }
+  };
+
   const handleUseSuggestion = (suggestion) => {
     setIsAiVisible(false);
     setTimeout(() => openCreateEditor(suggestion), 120);
@@ -689,6 +736,12 @@ export default function TodosScreen({ currentUser, currentWg, allTasks = [], cal
   };
 
   const renderAiSheet = () => {
+    const suggestionsToShow = geminiSuggestions.length > 0 ? geminiSuggestions : aiSuggestions;
+    const usingGemini = geminiSuggestions.length > 0;
+    const lastLoadedText = lastAiGeneratedAt
+      ? `Zuletzt aktualisiert: ${lastAiGeneratedAt.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}`
+      : 'Noch keine Live-Anfrage gesendet';
+
     return (
       <BottomSheet visible={isAiVisible} onClose={() => setIsAiVisible(false)} windowHeight={windowHeight} maxHeightRatio={0.9}>
         <View style={styles.assistantHeader}>
@@ -697,8 +750,8 @@ export default function TodosScreen({ currentUser, currentWg, allTasks = [], cal
           </View>
 
           <View style={styles.assistantHeaderText}>
-            <Text style={styles.assistantTitle} numberOfLines={2}>Smart-Vorschläge</Text>
-            <Text style={styles.assistantSubtitle} numberOfLines={2}>Regelbasiert aus Kalender, Aufgaben und Geburtstagen</Text>
+            <Text style={styles.assistantTitle} numberOfLines={2}>KI-Assistent</Text>
+            <Text style={styles.assistantSubtitle} numberOfLines={2}>Öffnen verbraucht nichts. Nur „Neu laden“ fragt Gemini.</Text>
           </View>
 
           <TouchableOpacity
@@ -712,33 +765,67 @@ export default function TodosScreen({ currentUser, currentWg, allTasks = [], cal
 
         <ScrollView style={styles.sheetScroll} contentContainerStyle={styles.assistantScrollContent} showsVerticalScrollIndicator={false}>
           <View style={styles.aiInfoBoxCompact}>
-            <Text style={styles.aiInfoTitle}>Hinweis</Text>
+            <View style={styles.aiInfoTopRow}>
+              <View style={{ flex: 1, paddingRight: 10 }}>
+                <Text style={styles.aiInfoTitle}>{usingGemini ? 'Echte KI aktiv' : 'Smart-Vorschläge'}</Text>
+                <Text style={styles.aiMetaText}>{lastLoadedText}</Text>
+              </View>
+              <TouchableOpacity
+                style={[styles.aiRefreshButton, isAiLoading && styles.aiRefreshButtonDisabled]}
+                onPress={refreshAiSuggestions}
+                disabled={isAiLoading}
+                activeOpacity={0.8}
+              >
+                {isAiLoading ? (
+                  <ActivityIndicator size="small" color="#FFF" />
+                ) : (
+                  <Ionicons name="refresh" size={17} color="#FFF" />
+                )}
+                <Text style={styles.aiRefreshButtonText}>{isAiLoading ? 'Lädt' : 'Neu laden'}</Text>
+              </TouchableOpacity>
+            </View>
             <Text style={styles.aiInfoTextCompact}>
-              Das ist aktuell noch keine echte generative KI. Die App erkennt Muster wie Geburtstag, Party, Einkauf oder Putzen und erstellt daraus vorbereitete To-Do-Vorschläge. Du kannst jeden Vorschlag vor dem Speichern bearbeiten.
+              {usingGemini
+                ? 'Diese Vorschläge wurden live von Gemini erstellt und bleiben sichtbar, bis du sie neu lädst.'
+                : 'Aktuell siehst du lokale Vorschläge ohne KI-Verbrauch. Tippe auf „Neu laden“, wenn Gemini neue Vorschläge erzeugen soll.'}
             </Text>
           </View>
 
-          {aiSuggestions.length === 0 ? (
+          {isAiLoading ? (
+            <View style={styles.emptyItemsBox}>
+              <ActivityIndicator size="large" color="#AF52DE" />
+              <Text style={styles.emptySmallText}>Gemini erstellt gerade Vorschläge...</Text>
+            </View>
+          ) : null}
+
+          {!isAiLoading && aiStatusText ? (
+            <View style={styles.aiWarningBox}>
+              <Ionicons name="information-circle-outline" size={18} color="#FF9500" />
+              <Text style={styles.aiWarningText}>{aiStatusText}</Text>
+            </View>
+          ) : null}
+
+          {!isAiLoading && suggestionsToShow.length === 0 ? (
             <View style={styles.emptyItemsBox}>
               <Ionicons name="sparkles-outline" size={30} color="#C7C7CC" />
               <Text style={styles.emptySmallText}>Gerade wurden keine passenden Vorschläge gefunden.</Text>
             </View>
-          ) : (
-            aiSuggestions.map((suggestion) => (
-              <View key={suggestion.id} style={styles.suggestionCard}>
-                <Text style={styles.suggestionReason}>{suggestion.reason}</Text>
-                <Text style={styles.suggestionTitle}>{suggestion.title}</Text>
-                <View style={styles.suggestionItemsWrap}>
-                  {suggestion.items.slice(0, 4).map((item) => (
-                    <Text key={item} style={styles.suggestionItem}>• {item}</Text>
-                  ))}
-                </View>
-                <TouchableOpacity style={styles.useSuggestionButton} onPress={() => handleUseSuggestion(suggestion)}>
-                  <Text style={styles.useSuggestionButtonText}>Übernehmen & bearbeiten</Text>
-                </TouchableOpacity>
+          ) : null}
+
+          {!isAiLoading && suggestionsToShow.map((suggestion) => (
+            <View key={suggestion.id} style={styles.suggestionCard}>
+              <Text style={styles.suggestionReason}>{suggestion.reason}</Text>
+              <Text style={styles.suggestionTitle}>{suggestion.title}</Text>
+              <View style={styles.suggestionItemsWrap}>
+                {suggestion.items.slice(0, 4).map((item) => (
+                  <Text key={item} style={styles.suggestionItem}>• {item}</Text>
+                ))}
               </View>
-            ))
-          )}
+              <TouchableOpacity style={styles.useSuggestionButton} onPress={() => handleUseSuggestion(suggestion)}>
+                <Text style={styles.useSuggestionButtonText}>Übernehmen & bearbeiten</Text>
+              </TouchableOpacity>
+            </View>
+          ))}
         </ScrollView>
       </BottomSheet>
     );
@@ -758,9 +845,9 @@ export default function TodosScreen({ currentUser, currentWg, allTasks = [], cal
     <View style={styles.container}>
       <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         <View style={styles.topActionRow}>
-          <TouchableOpacity style={styles.aiButton} onPress={() => setIsAiVisible(true)}>
+          <TouchableOpacity style={styles.aiButton} onPress={openAiAssistant}>
             <Ionicons name="sparkles" size={18} color="#FFF" />
-            <Text style={styles.aiButtonText}>Smart-Vorschläge</Text>
+            <Text style={styles.aiButtonText}>KI-Assistent</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.archiveToggle} onPress={() => setShowArchived((current) => !current)}>
             <Ionicons name={showArchived ? 'file-tray-full' : 'archive-outline'} size={18} color="#1C1C1E" />
@@ -774,7 +861,7 @@ export default function TodosScreen({ currentUser, currentWg, allTasks = [], cal
           <View style={styles.emptyStateCard}>
             <Ionicons name={showArchived ? 'archive-outline' : 'list-circle-outline'} size={42} color="#C7C7CC" />
             <Text style={styles.emptyTitle}>{showArchived ? 'Noch nichts archiviert' : 'Noch keine To-Dos'}</Text>
-            <Text style={styles.emptyText}>{showArchived ? 'Abgeschlossene To-Dos landen später hier.' : 'Tippe unten rechts auf + oder nutze die Smart-Vorschläge.'}</Text>
+            <Text style={styles.emptyText}>{showArchived ? 'Abgeschlossene To-Dos landen später hier.' : 'Tippe unten rechts auf + oder nutze den KI-Assistenten.'}</Text>
           </View>
         ) : (
           visibleTodos.map(renderTodoCard)
@@ -890,8 +977,15 @@ const styles = StyleSheet.create({
   assistantCloseButton: { width: 42, height: 42, borderRadius: 21, backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', marginLeft: 10 },
   assistantScrollContent: { paddingHorizontal: 22, paddingBottom: 22 },
   aiInfoBoxCompact: { backgroundColor: '#F6ECFF', borderRadius: 18, padding: 14, marginBottom: 14 },
+  aiInfoTopRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
+  aiMetaText: { color: '#8E5BA6', fontSize: 12, fontWeight: '700', marginTop: 2 },
+  aiRefreshButton: { minHeight: 38, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#AF52DE', borderRadius: 14, paddingHorizontal: 12 },
+  aiRefreshButtonDisabled: { opacity: 0.65 },
+  aiRefreshButtonText: { color: '#FFF', fontSize: 13, fontWeight: '900', marginLeft: 6 },
   aiInfoTitle: { color: '#6E3A8A', fontSize: 12, fontWeight: '900', textTransform: 'uppercase', marginBottom: 4 },
   aiInfoTextCompact: { color: '#6E3A8A', fontSize: 13, lineHeight: 19, fontWeight: '600' },
+  aiWarningBox: { flexDirection: 'row', alignItems: 'flex-start', backgroundColor: '#FFF9F2', borderRadius: 16, padding: 12, marginBottom: 12, borderWidth: 0.5, borderColor: '#FFE2B8' },
+  aiWarningText: { flex: 1, marginLeft: 8, fontSize: 13, color: '#8A4B00', lineHeight: 18, fontWeight: '600' },
   suggestionCard: { backgroundColor: '#FFF', borderRadius: 20, padding: 16, marginBottom: 12, borderWidth: 0.5, borderColor: '#E5E5EA' },
   suggestionReason: { color: '#AF52DE', fontWeight: '900', fontSize: 12, textTransform: 'uppercase', marginBottom: 5 },
   suggestionTitle: { fontSize: 18, fontWeight: '900', color: '#000', marginBottom: 8 },
