@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Modal, TextInput, Alert, KeyboardAvoidingView, Platform, Image } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Modal, TextInput, Alert, KeyboardAvoidingView, Platform, Image, Animated } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { db } from '../firebaseConfig'; 
@@ -13,6 +13,11 @@ export default function PlanerScreen({ currentUser, currentWg }) {
   const [isAddModalVisible, setIsAddModalVisible] = useState(false);
   const [isDetailModalVisible, setIsDetailModalVisible] = useState(false);
   const [detailViewMode, setDetailViewMode] = useState('details'); 
+  const [showArchived, setShowArchived] = useState(false); 
+
+  // NEU: States für die Haken-Animation
+  const [animatingTaskId, setAnimatingTaskId] = useState(null);
+  const checkAnim = useRef(new Animated.Value(0)).current;
 
   const [editId, setEditId] = useState(null);
   const [title, setTitle] = useState('');
@@ -30,7 +35,8 @@ export default function PlanerScreen({ currentUser, currentWg }) {
     });
 
     const unsubTasks = onSnapshot(query(collection(db, "tasks"), where("wgId", "==", currentWg.id), orderBy("fullDate", "asc")), (snap) => {
-      setTasks(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      const allTasks = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      setTasks(allTasks.filter(t => showArchived ? t.status === 'archived' : (t.status !== 'archived')));
     });
 
     const unsubSwaps = onSnapshot(query(collection(db, "swapRequests"), where("wgId", "==", currentWg.id), where("status", "==", "pending")), (snap) => {
@@ -38,12 +44,42 @@ export default function PlanerScreen({ currentUser, currentWg }) {
     });
 
     return () => { unsubMembers(); unsubTasks(); unsubSwaps(); };
-  }, [currentWg]);
+  }, [currentWg, showArchived]);
 
   const formatDate = (d) => d.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: 'short' });
 
   const resetForm = () => {
     setEditId(null); setTitle(''); setDate(new Date()); setDesc(''); setIsAddModalVisible(false);
+  };
+
+  const toggleTaskStatus = async (task) => {
+    try {
+      const newStatus = task.status === 'archived' ? 'active' : 'archived';
+      await updateDoc(doc(db, "tasks", task.id), { status: newStatus });
+    } catch (e) {
+      Alert.alert("Fehler", "Status konnte nicht aktualisiert werden.");
+    }
+  };
+
+  // NEU: Interceptor-Funktion startet die Haken-Animation vor dem Archivieren
+  const handleCheckTask = (task) => {
+    if (task.status === 'archived') {
+      // Wenn wir im Archiv sind, ohne Animation direkt zurückholen
+      toggleTaskStatus(task);
+    } else {
+      // Wenn wir in der Inbox sind, erst Animation abspielen
+      setAnimatingTaskId(task.id);
+      Animated.timing(checkAnim, {
+        toValue: 1,
+        duration: 400, // Animationsdauer in ms
+        useNativeDriver: true,
+      }).start(async () => {
+        // Nach Beendigung der Animation: In Firestore updaten
+        await toggleTaskStatus(task);
+        setAnimatingTaskId(null);
+        checkAnim.setValue(0); // Reset des Animationswerts für die nächste Aufgabe
+      });
+    }
   };
 
   const handleSave = async () => {
@@ -61,7 +97,8 @@ export default function PlanerScreen({ currentUser, currentWg }) {
       userBg: editId ? selectedTask.userBg : (currentUser.avatarBg || '#EBF4FF'),
       desc: desc.trim() || 'Keine Beschreibung.',
       wgId: currentWg.id,
-      type: editId ? (selectedTask?.type || "manuell") : "manuell"
+      type: editId ? (selectedTask?.type || "manuell") : "manuell",
+      status: editId ? (selectedTask?.status || 'active') : 'active'
     };
 
     try {
@@ -228,7 +265,7 @@ export default function PlanerScreen({ currentUser, currentWg }) {
     );
   };
 
-  const availableSwaps = tasks.filter(t => t.userId !== currentUser.id);
+  const availableSwaps = tasks.filter(t => t.userId !== currentUser.id && t.status !== 'archived');
 
   if (!currentWg) {
     return (
@@ -242,12 +279,26 @@ export default function PlanerScreen({ currentUser, currentWg }) {
   return (
     <View style={styles.container}>
       <ScrollView showsVerticalScrollIndicator={false} style={styles.content}>
-        <Text style={styles.sectionTitle}>Anstehende To-Dos</Text>
+        
+        {/* Apple-Style Archiv Umschalter ganz oben */}
+        <TouchableOpacity style={styles.archiveToggle} onPress={() => setShowArchived(!showArchived)}>
+          <Ionicons name={showArchived ? "list-outline" : "archive-outline"} size={20} color="#007AFF" />
+          <Text style={styles.archiveToggleText}>{showArchived ? "Zurück zur Übersicht" : "Zum Archiv"}</Text>
+        </TouchableOpacity>
+
+        <Text style={styles.sectionTitle}>{showArchived ? "Archivierte Aufgaben" : "Anstehende To-Dos"}</Text>
+        
         {tasks.length === 0 ? (
-          <View style={styles.emptyContainer}><Ionicons name="cafe-outline" size={50} color="#C7C7CC" /><Text style={styles.emptyText}>Keine Aufgaben.</Text></View>
+          <View style={styles.emptyContainer}>
+            <Ionicons name="cafe-outline" size={50} color="#C7C7CC" />
+            <Text style={styles.emptyText}>{showArchived ? "Das Archiv ist leer." : "Keine Aufgaben."}</Text>
+          </View>
         ) : (
           tasks.map(task => {
             const isInitiatorOfSwap = swapRequests.some(r => r.fromTaskId === task.id);
+            const isAnimating = animatingTaskId === task.id; // Prüft Animations-Status
+            const isArchived = task.status === 'archived';
+
             return (
               <TouchableOpacity 
                 key={task.id} 
@@ -261,6 +312,33 @@ export default function PlanerScreen({ currentUser, currentWg }) {
                     {task.dateDisplay} • {task.userName} {isInitiatorOfSwap && <Text style={{color: '#FF9500', fontWeight: 'bold'}}> (🔄 Tausch läuft)</Text>}
                   </Text>
                 </View>
+
+                {/* KORRIGIERT: Überlappender, nativer Animations-Wrapper für die Checkbox */}
+                <TouchableOpacity style={styles.checkboxContainer} onPress={() => handleCheckTask(task)}>
+                  <View style={styles.checkboxWrapper}>
+                    {/* Basis-Kreis */}
+                    <Ionicons 
+                      name={isArchived ? "checkmark-circle" : "ellipse-outline"} 
+                      size={26} 
+                      color={isArchived ? "#34C759" : "#C7C7CC"} 
+                    />
+                    {/* Animierter grüner Haken, der sich dynamisch vergrößert */}
+                    {isAnimating && (
+                      <Animated.View 
+                        style={[
+                          styles.animatedCheckOverlay, 
+                          { 
+                            transform: [{ scale: checkAnim }],
+                            opacity: checkAnim 
+                          }
+                        ]}
+                      >
+                        <Ionicons name="checkmark-circle" size={26} color="#34C759" />
+                      </Animated.View>
+                    )}
+                  </View>
+                </TouchableOpacity>
+
                 <Ionicons name="chevron-forward" size={18} color="#C7C7CC" />
               </TouchableOpacity>
             );
@@ -269,7 +347,11 @@ export default function PlanerScreen({ currentUser, currentWg }) {
         <View style={{ height: 110 }} />
       </ScrollView>
 
-      <TouchableOpacity style={styles.fab} onPress={() => setIsAddModalVisible(true)}><Ionicons name="add" size={40} color="#FFF" /></TouchableOpacity>
+      {!showArchived && (
+        <TouchableOpacity style={styles.fab} onPress={() => setIsAddModalVisible(true)}>
+          <Ionicons name="add" size={40} color="#FFF" />
+        </TouchableOpacity>
+      )}
 
       {/* MODAL: ADD / EDIT */}
       <Modal visible={isAddModalVisible} animationType="slide" transparent>
@@ -337,7 +419,7 @@ export default function PlanerScreen({ currentUser, currentWg }) {
                       <Text style={styles.swapBtnText}>Warten auf Bestätigung...</Text>
                     </View>
                   ) : (
-                    selectedTask.userId === currentUser.id ? (
+                    selectedTask.userId === currentUser.id && selectedTask.status !== 'archived' ? (
                       <TouchableOpacity style={styles.swapBtnMain} onPress={() => setDetailViewMode('swap')}>
                         <Ionicons name="swap-horizontal" size={22} color="#FFF" />
                         <Text style={styles.swapBtnText}>Job tauschen</Text>
@@ -436,5 +518,46 @@ const styles = StyleSheet.create({
   reqBtnText: { color: '#FFF', fontWeight: 'bold', fontSize: 15 },
   infoBoxActiveSwap: { backgroundColor: '#FFF9F2', padding: 14, borderRadius: 14, borderWidth: 1, borderColor: '#FFE2B8', marginBottom: 15 },
   centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  centerText: { color: '#8E8E93', textAlign: 'center', marginHorizontal: 40, marginTop: 15, fontSize: 16 }
+  centerText: { color: '#8E8E93', textAlign: 'center', marginHorizontal: 40, marginTop: 15, fontSize: 16 },
+  
+  archiveToggle: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    backgroundColor: '#F2F2F7', 
+    paddingVertical: 12, 
+    paddingHorizontal: 16, 
+    borderRadius: 14, 
+    justifyContent: 'center', 
+    marginTop: 10, 
+    marginBottom: 5 
+  },
+  archiveToggleText: { 
+    fontSize: 15, 
+    fontWeight: '600', 
+    color: '#007AFF', 
+    marginLeft: 8 
+  },
+  checkboxContainer: { 
+    paddingHorizontal: 10, 
+    justifyContent: 'center', 
+    alignItems: 'center' 
+  },
+  
+  // NEU: Absolute Positionierung schichtet den Haken über den Kreis für die Skalierungs-Animation
+  checkboxWrapper: {
+    width: 26,
+    height: 26,
+    justifyContent: 'center',
+    alignItems: 'center',
+    position: 'relative'
+  },
+  animatedCheckOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center'
+  }
 });
