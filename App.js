@@ -225,7 +225,10 @@ function AppContent() {
   }
 
   if (!currentUser) return <KontoScreen />;
-
+  const currentMonthYear = new Date().toLocaleDateString('de-DE', { 
+  month: 'long', 
+  year: 'numeric' 
+  });
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <StatusBar barStyle="dark-content" />
@@ -233,11 +236,11 @@ function AppContent() {
       {/* HEADER BEREICH */}
       <View style={styles.header}>
         <View>
-          <Text style={styles.dateText}>Juni 2026</Text>
-          <Text style={styles.greeting}>
-            {activeTab === 'Planer' ? 'Inbox' : activeTab}
-          </Text>
-        </View>
+          <Text style={styles.dateText}>{currentMonthYear}</Text>
+    <Text style={styles.greeting}>
+      {activeTab === 'Planer' ? 'Inbox' : activeTab}
+    </Text>
+  </View>
         <TouchableOpacity style={styles.bellButton} onPress={openNotifications}>
           <Ionicons name="notifications-outline" size={26} color="#000" />
           {unreadCount > 0 && (
